@@ -146,9 +146,28 @@ const cpython = @import("cpython").Model(zuvloop.py.c, 16);
 libuv, and takes each parameter type from them. Its callbacks are recorded, not run, and a
 call into Python does not call back into the code under test: reentrancy is not modelled.
 
-The `integration` directory uses the models on a real extension, zuvloop: its address
-conversion, and the write path of its stream transport. Run it with
+The `integration` directory uses the models on a real extension, zuvloop. Run it with
 `zig build verify-zuvloop -Dzuvloop=<checkout> -Dpython-include=<dir>`.
+
+| Proof | Time |
+| --- | --- |
+| A kernel address becomes a Python address without panicking or reading out of bounds | 95s |
+| A Unix path or name, as text or bytes, becomes a socket address safely | 43s |
+| A `(host, port[, flowinfo, scope_id])` tuple of any contents becomes a socket address safely | 9 min |
+| An object that is not a tuple is rejected with a Python error | 5 min |
+| Flushing writes releases every buffer when the socket takes everything | 4s |
+| ... when the socket fails | 4s |
+| ... when the transport is closing | 4s |
+| ... when the write is queued | 17 min |
+
+Pass `-j1` to run them one at a time: the largest needs most of 20 GB.
+
+Each flush proof fixes what the socket answers. One proof over every answer at once does
+not fit in memory, and neither does one over every Python object: split a proof by case
+when the cases take different paths through the code.
+
+The proofs are bounded by the models: text and bytes of up to 16 bytes, tuples of up to
+four items, two pending writes of two bytes each, and callbacks that are not run.
 
 An `assert()` in a translated C header is checked too. A failing one is reported as
 `assert() failed in C code`, with its line.

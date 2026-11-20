@@ -1,0 +1,3 @@
+#!/bin/sh
+set -eu
+zig fmt src examples build.zig

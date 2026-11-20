@@ -1,0 +1,4 @@
+#!/bin/sh
+# Unit tests, then every example proof. Pass -Dcbmc-docker-image=<image> if cbmc is not on PATH.
+set -eu
+zig build test verify "$@"

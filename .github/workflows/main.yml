@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions: {}
+
+jobs:
+  tests:
+    # Pinned because the distribution's cbmc package is the checker version the
+    # recorded fixtures and the cost notes were measured against.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: "0.16.0"
+
+      - name: Install cbmc
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cbmc gcc libc6-dev
+
+      - name: Run checks
+        run: scripts/check
+
+      - name: Run tests and proofs
+        run: scripts/test

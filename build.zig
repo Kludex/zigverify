@@ -161,6 +161,7 @@ pub fn build(b: *std.Build) void {
                 "pub const addr = @import(\"zig/addr.zig\");\n" ++
                 "pub const uv = @import(\"zig/uv.zig\");\n" ++
                 "pub const loop = @import(\"zig/loop.zig\");\n" ++
+                "pub const handle = @import(\"zig/handle.zig\");\n" ++
                 "pub const transport = @import(\"zig/transport.zig\");\n",
         );
         const zuvloop = b.createModule(.{ .root_source_file = root, .link_libc = true });
@@ -188,6 +189,9 @@ pub fn build(b: *std.Build) void {
                 .{ .function = "flush_releases_buffers_when_the_socket_fails", .unwind = 20 },
                 .{ .function = "flush_releases_buffers_when_the_transport_is_closing", .unwind = 20 },
                 .{ .function = "fifth_write_is_kept", .unwind = 40 },
+                .{ .function = "completed_write_releases_its_buffers", .unwind = 40 },
+                .{ .function = "close_drains_then_closes_once", .unwind = 40 },
+                .{ .function = "failed_write_closes_once_and_releases_everything", .unwind = 40 },
                 // A bug in zuvloop at the time of writing. Drop `.expect` once it is fixed there.
                 .{ .function = "fifth_write_is_kept_when_pause_writing_closes", .unwind = 40, .expect = .refuted },
             },

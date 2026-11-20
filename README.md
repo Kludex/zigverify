@@ -143,7 +143,8 @@ const cpython = @import("cpython").Model(zuvloop.py.c, 16);
 ```
 
 `models/libuv_stream.zig` is instantiated the same way, with the code's own declarations of
-libuv, and takes each parameter type from them. Its callbacks are recorded, not run.
+libuv, and takes each parameter type from them. Its callbacks run when the harness calls
+`completeWrite` or `deliverClose`: the harness plays the loop, and decides the order.
 
 A call into Python runs no code by default. Set `cpython.on_call` to a function and every
 modelled call runs it first, which is how a harness has a protocol callback reenter the
@@ -167,6 +168,9 @@ The `integration` directory uses the models on a real extension, zuvloop. Run it
 | ... when the transport is closing | 11s |
 | ... when the write is queued, and Python calls succeed | 3.7 min |
 | Five writes in one iteration are all kept | 11s |
+| A completed write releases the buffers pinned for it | 16s |
+| `close()` sends what is outstanding, then closes the handle exactly once | 35s |
+| A failed write closes exactly once and releases every buffer | 35s |
 | ... and still kept when `pause_writing` calls `close()` | refuted in 15s |
 
 The last one is a real bug. The fifth `write()` flushes a full batch, the flush pauses the
@@ -181,7 +185,7 @@ not fit in memory, and neither does one over every Python object: split a proof 
 when the cases take different paths through the code.
 
 The proofs are bounded by the models: text and bytes of up to 16 bytes, tuples of up to
-four items, two pending writes of two bytes each, and libuv callbacks that are not run.
+four items, and a handful of one- and two-byte writes. Reads are not modelled.
 
 An `assert()` in a translated C header is checked too. A failing one is reported as
 `assert() failed in C code`, with its line.

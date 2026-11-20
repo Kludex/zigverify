@@ -52,7 +52,10 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         pub var attribute: c.PyTypeObject = undefined;
         /// What `PyType_GenericAlloc` hands out: zeroed memory for one instance of an extension type.
         var instance: [1024]u8 align(16) = undefined;
-        var thread_state: [64]u8 align(16) = undefined;
+        /// The current thread's state, with no context entered. Code that reads its fields
+        /// directly, as some does for speed, finds them all zero. The struct does not survive
+        /// translation from C, so this is a block larger than any version of it.
+        var thread_state: [4096]u8 align(16) = undefined;
 
         /// Call first. Starts from an interpreter with no objects and no error set.
         pub fn reset() void {
@@ -73,6 +76,7 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
                 const count: *usize = @ptrCast(immortal);
                 count.* = 0xC0000000;
             }
+            thread_state = @splat(0);
             spec = null;
             failures = true;
             on_call = null;

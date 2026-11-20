@@ -101,17 +101,21 @@ export fn flush_releases_buffers_when_the_transport_is_closing() void {
 
 /// The transport `write()` and `close()` act on, where a callback can reach it.
 var registered: [1024]u8 align(16) = @splat(0);
+var loop_state: zuvloop.loop.State = undefined;
+var loop_instance: zuvloop.loop.LoopObject = undefined;
+var loop_handles: [6]usize = undefined;
+
+/// `UV_EPIPE` and `UV_ECANCELED` on every platform but Windows.
+const epipe: c_int = -32;
+const ecanceled: c_int = -125;
 
 fn closeFromCallback() void {
     _ = cpython.method("close").?(@ptrCast(&registered), null);
 }
 
-/// Five one-byte writes in one loop iteration, on a socket that takes nothing. The batch
-/// holds four, so the fifth flushes it, which queues four bytes and pauses the protocol.
-///
-/// asyncio sends every byte passed to `write()` before a `close()` that came later. So
-/// after the fifth `write()` returns, all five bytes must be either with libuv or pending.
-fn fifthWriteIsKept(comptime closes_while_paused: bool) void {
+/// An open transport inside a running loop, on a socket that takes nothing, with a healthy
+/// interpreter and a libuv that accepts every request: one path, so many calls stay cheap.
+fn openTransport() *zuvloop.transport.Transport {
     cpython.reset();
     stream.reset();
     cpython.failures = false;
@@ -120,43 +124,105 @@ fn fifthWriteIsKept(comptime closes_while_paused: bool) void {
     // `asyncio.Transport` is an object header and one slot, which the transport checks.
     cpython.attribute.tp_basicsize = @offsetOf(zuvloop.transport.Transport, "loop");
     zuvloop.py.initConstants() catch unreachable;
+    zuvloop.handle.register(cpython.anyValue()) catch unreachable;
     zuvloop.transport.register(cpython.anyValue()) catch unreachable;
 
-    var handles: [6]usize = undefined;
-    var state: zuvloop.loop.State = .{
-        .uvloop = @ptrCast(&handles[0]),
-        .idle = @ptrCast(&handles[1]),
-        .timer = @ptrCast(&handles[2]),
-        .sampler = @ptrCast(&handles[3]),
-        .waker = @ptrCast(&handles[4]),
-        .flusher = @ptrCast(&handles[5]),
+    loop_state = .{
+        .uvloop = @ptrCast(&loop_handles[0]),
+        .idle = @ptrCast(&loop_handles[1]),
+        .timer = @ptrCast(&loop_handles[2]),
+        .sampler = @ptrCast(&loop_handles[3]),
+        .waker = @ptrCast(&loop_handles[4]),
+        .flusher = @ptrCast(&loop_handles[5]),
         .block = &.{},
         // Inside a running loop, writes are batched until the end of the iteration.
         .running = true,
+        // The transport's own handle, which creating a real transport counts.
+        .external_handles = 1,
     };
-    var loop_object = std.mem.zeroes(zuvloop.loop.LoopObject);
-    loop_object.st = &state;
+    loop_instance = std.mem.zeroes(zuvloop.loop.LoopObject);
+    loop_instance.st = &loop_state;
+    registered = @splat(0);
     const transport: *zuvloop.transport.Transport = @ptrCast(&registered);
-    transport.loop = @ptrCast(&loop_object);
-    transport.state = &state;
+    // The loop holds one reference to a live transport, which the close callback gives up.
+    @as(*usize, @ptrCast(transport)).* = 2;
+    transport.loop = @ptrCast(&loop_instance);
+    transport.state = &loop_state;
     transport.flags = open;
     transport.cb_pause_writing = @ptrCast(cpython.anyValue());
-    if (closes_while_paused) cpython.on_call = closeFromCallback;
+    transport.cb_connection_lost = @ptrCast(cpython.anyValue());
+    // libuv handles carry a pointer back to their owner, which creating a transport sets.
+    const handle_offset = std.mem.alignForward(usize, @sizeOf(zuvloop.transport.Transport), 16);
+    zuvloop.uv.setData(&registered[handle_offset], transport);
+    return transport;
+}
 
+fn writeFiveBytes(transport: *zuvloop.transport.Transport) void {
     const write = cpython.method("write").?;
     inline for (0..5) |_| {
         verifier.assert(write(@ptrCast(transport), cpython.anyBytes(1)) != null);
     }
+}
 
+/// Five one-byte writes in one loop iteration. The batch holds four, so the fifth flushes
+/// it, which queues four bytes and pauses the protocol.
+///
+/// asyncio sends every byte passed to `write()` before a `close()` that came later. So
+/// after the fifth `write()` returns, all five bytes must be either with libuv or pending.
+export fn fifth_write_is_kept() void {
+    const transport = openTransport();
+    writeFiveBytes(transport);
     verifier.assert(stream.queuedBytes() + transport.pending_size == 5);
 }
 
-export fn fifth_write_is_kept() void {
-    fifthWriteIsKept(false);
+/// Refuted, a bug in zuvloop: the protocol calls `close()` from inside `pause_writing`, which
+/// the fifth `write()` triggered, and the transport then drops that write's byte.
+export fn fifth_write_is_kept_when_pause_writing_closes() void {
+    const transport = openTransport();
+    cpython.on_call = closeFromCallback;
+    writeFiveBytes(transport);
+    verifier.assert(stream.queuedBytes() + transport.pending_size == 5);
 }
 
-/// The suspected bug: the protocol calls `close()` from inside `pause_writing`, which the
-/// fifth `write()` triggered, and the transport then drops that write's byte.
-export fn fifth_write_is_kept_when_pause_writing_closes() void {
-    fifthWriteIsKept(true);
+/// When libuv finishes the queued write, the transport releases the four buffers it pinned
+/// for it, and keeps the fifth, which is still waiting to be flushed.
+export fn completed_write_releases_its_buffers() void {
+    const transport = openTransport();
+    writeFiveBytes(transport);
+    stream.completeWrite(0);
+    verifier.assert(cpython.releasedBuffers() == 4);
+    verifier.assert(transport.write_buffer_size == 0);
+    verifier.assert(transport.pending_size == 1);
+    verifier.assert(stream.handleCloses() == 0);
+}
+
+/// `close()` with data outstanding sends all of it first: the pending byte is flushed, the
+/// handle stays open until both requests finish, is then closed exactly once, and the
+/// close callback marks the connection lost. Every buffer is released.
+export fn close_drains_then_closes_once() void {
+    const transport = openTransport();
+    writeFiveBytes(transport);
+    closeFromCallback();
+    verifier.assert(stream.acceptedBytes() == 5);
+    verifier.assert(stream.handleCloses() == 0);
+    stream.completeWrite(0);
+    verifier.assert(stream.handleCloses() == 0);
+    stream.completeWrite(0);
+    verifier.assert(stream.handleCloses() == 1);
+    verifier.assert(cpython.releasedBuffers() == 5);
+    stream.deliverClose();
+    verifier.assert(loop_state.closing_handles == 0);
+}
+
+/// A write that fails closes the transport at once, exactly once, and drops what was still
+/// pending without leaking its buffer.
+export fn failed_write_closes_once_and_releases_everything() void {
+    const transport = openTransport();
+    writeFiveBytes(transport);
+    stream.completeWrite(epipe);
+    verifier.assert(stream.handleCloses() == 1);
+    verifier.assert(cpython.releasedBuffers() == 5);
+    verifier.assert(transport.pending_count == 0);
+    stream.deliverClose();
+    verifier.assert(loop_state.closing_handles == 0);
 }

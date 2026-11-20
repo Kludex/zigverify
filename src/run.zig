@@ -12,7 +12,7 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(arena);
     if (args.len == 4 and std.mem.eql(u8, args[1], "prepare")) {
         const c_source = try std.Io.Dir.cwd().readFileAlloc(init.io, args[2], arena, .unlimited);
-        const prepared = try prepare.compareAddresses(arena, c_source);
+        const prepared = try prepare.forChecker(arena, c_source);
         return std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = args[3], .data = prepared });
     }
     if (args.len < 9) {

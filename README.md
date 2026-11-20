@@ -65,6 +65,7 @@ an IPv6 address out of a 16-byte buffer.
 | --- | --- |
 | `verifier.any(T)` | Every value of `T`. Integers, floats, bools, enums, optionals, arrays, structs. |
 | `verifier.prefix(T, buffer)` | Every slice from empty up to `buffer.len` arbitrary items. |
+| `verifier.fill(bytes)` | Overwrite a buffer with arbitrary bytes. |
 | `verifier.assume(condition)` | Discard the inputs where `condition` is false. |
 | `verifier.assert(condition)` | Fail the proof if any remaining input makes `condition` false. |
 
@@ -130,6 +131,7 @@ library's documentation: a model that never fails proves nothing about your erro
 | --- | --- |
 | `models/cpython.zig` | Taking arguments apart and reporting errors: tuples, text, bytes, integers, the constants, `PyErr_*`, and the calls that return a new reference. |
 | `models/libuv.zig` | Converting between text and socket addresses, and error strings. |
+| `models/libuv_stream.zig` | Stream writes and the handle lifecycle: `uv_try_write`, `uv_write`, `uv_shutdown`, `uv_close`. |
 
 The CPython model also keeps the books on references. Releasing a reference the code only
 borrowed fails the proof, and `assertNoLeakedReferences` fails it when a reference the code
@@ -140,9 +142,16 @@ was given is never released. It is instantiated with the code's own translation 
 const cpython = @import("cpython").Model(zuvloop.py.c, 16);
 ```
 
-`integration/zuvloop.zig` uses both models to prove properties of a real extension's
-address conversion. Run it with
+`models/libuv_stream.zig` is instantiated the same way, with the code's own declarations of
+libuv, and takes each parameter type from them. Its callbacks are recorded, not run, and a
+call into Python does not call back into the code under test: reentrancy is not modelled.
+
+The `integration` directory uses the models on a real extension, zuvloop: its address
+conversion, and the write path of its stream transport. Run it with
 `zig build verify-zuvloop -Dzuvloop=<checkout> -Dpython-include=<dir>`.
+
+An `assert()` in a translated C header is checked too. A failing one is reported as
+`assert() failed in C code`, with its line.
 
 > [!WARNING]
 > **A call with no model makes the proof inconclusive.** The checker would treat the return

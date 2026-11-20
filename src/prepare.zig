@@ -1,5 +1,5 @@
-//! Rewrites the C that Zig generates so the checker reads pointer comparisons the way Zig
-//! means them.
+//! Rewrites the C that Zig generates so the checker reads it the way Zig means it. Mostly
+//! that is about pointer comparisons:
 //!
 //! Zig compares pointers by address. C leaves `<` and `>=` between pointers into different
 //! objects undefined, and CBMC models that by letting each such comparison come out either
@@ -11,9 +11,9 @@ const std = @import("std");
 
 const Allocator = std.mem.Allocator;
 
-/// Returns `c_source` with every ordered comparison of two pointers made on their addresses.
-/// The result lives in `arena`.
-pub fn compareAddresses(arena: Allocator, c_source: []const u8) Allocator.Error![]const u8 {
+/// Returns `c_source` with every ordered comparison of two pointers made on their addresses,
+/// and with C assertion failures routed to the verifier. The result lives in `arena`.
+pub fn forChecker(arena: Allocator, c_source: []const u8) Allocator.Error![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     try out.ensureTotalCapacity(arena, c_source.len + c_source.len / 64);
     // Names of the pointer-typed parameters and temporaries of the function being read.
@@ -40,7 +40,10 @@ pub fn compareAddresses(arena: Allocator, c_source: []const u8) Allocator.Error!
         if (!try compareLine(arena, &out, pointers.items, line)) try out.appendSlice(arena, line);
         if (lines.peek() != null) try out.append(arena, '\n');
     }
-    return out.items;
+    // A failed `assert()` in translated C headers calls glibc's `__assert_fail`. CBMC gives that
+    // name a meaning of its own and crashes on the call Zig generates, so the call is sent to
+    // the shim instead, where it fails the proof like any other check.
+    return std.mem.replaceOwned(u8, arena, out.items, "\"__assert_fail\"", "\"verifier_assert_fail\"");
 }
 
 /// Writes the rewritten form of `line` if it is `<target> = <pointer> <op> <pointer>;`.
@@ -74,7 +77,7 @@ const allocation_c = @embedFile("testdata/allocation.c");
 test "the overlap check of a memcpy compares addresses" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    const prepared = try compareAddresses(arena.allocator(), allocation_c);
+    const prepared = try forChecker(arena.allocator(), allocation_c);
     try std.testing.expect(std.mem.indexOf(u8, allocation_c, "\n t11 = t13 >= t14;\n t16 = t12 >= t15;\n") != null);
     try std.testing.expect(std.mem.indexOf(
         u8,
@@ -86,7 +89,7 @@ test "the overlap check of a memcpy compares addresses" {
 test "comparisons of integers are left as they are" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    const prepared = try compareAddresses(arena.allocator(), allocation_c);
+    const prepared = try forChecker(arena.allocator(), allocation_c);
     try std.testing.expect(std.mem.indexOf(u8, prepared, "\n t3 = t8 > t15;\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared, "\n t7 = t5 < t6;\n") != null);
 }
@@ -94,6 +97,16 @@ test "comparisons of integers are left as they are" {
 test "nothing else in the file changes" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    const prepared = try compareAddresses(arena.allocator(), allocation_c);
+    const prepared = try forChecker(arena.allocator(), allocation_c);
     try std.testing.expectEqual(allocation_c.len + 4 * "(uintptr_t)".len, prepared.len);
+}
+
+test "a C assertion failure is sent to the verifier" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const declaration = "zig_extern zig_noreturn void zig_e___assert_fail(void) zig_mangled(zig_e___assert_fail, \"__assert_fail\");";
+    try std.testing.expectEqualStrings(
+        "zig_extern zig_noreturn void zig_e___assert_fail(void) zig_mangled(zig_e___assert_fail, \"verifier_assert_fail\");",
+        try forChecker(arena.allocator(), declaration),
+    );
 }

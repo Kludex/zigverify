@@ -34,6 +34,10 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         var used: usize = 0;
         var error_set = false;
         var owned_references: usize = 0;
+        var buffer_releases: usize = 0;
+        /// What `PyType_GenericAlloc` hands out: zeroed memory for one instance of an extension type.
+        var instance: [1024]u8 align(16) = undefined;
+        var thread_state: [64]u8 align(16) = undefined;
 
         /// Call first. Starts from an interpreter with no objects and no error set.
         pub fn reset() void {
@@ -50,6 +54,7 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             used = 0;
             error_set = false;
             owned_references = 0;
+            buffer_releases = 0;
             // The constants take the first three slots, so `Py_GetConstantBorrowed` can index them.
             _ = create(.none, false);
             _ = create(.false, false);
@@ -85,6 +90,11 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             return @ptrCast(tuple);
         }
 
+        /// How many buffer views with an owner the code has released.
+        pub fn releasedBuffers() usize {
+            return buffer_releases;
+        }
+
         pub fn errorIsSet() bool {
             return error_set;
         }
@@ -95,7 +105,8 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         }
 
         fn create(kind: Kind, owned: bool) *Object {
-            verifier.assume(used < pool.len);
+            // Running out is a limit of the model, and must not pass for a proof.
+            verifier.assert(used < pool.len);
             const object = &pool[used];
             used += 1;
             object.head = std.mem.zeroes(c.PyObject);
@@ -130,11 +141,20 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             return @ptrCast(@alignCast(object.?));
         }
 
+        /// A call that may fail, reporting it as -1 with an error set.
+        fn status() c_int {
+            if (verifier.any(bool)) return 0;
+            error_set = true;
+            return -1;
+        }
+
         fn typeOf(object: ?*c.PyObject) callconv(.c) ?*c.PyTypeObject {
             return object.?.ob_type;
         }
 
         fn dealloc(object: ?*c.PyObject) callconv(.c) void {
+            // An instance from `PyType_GenericAlloc` is the code's own to release.
+            if (@intFromPtr(object.?) == @intFromPtr(&instance)) return;
             const released = cast(object);
             // Reaching zero on a borrowed object means the code released a reference it never had.
             verifier.assert(released.owned);
@@ -174,8 +194,8 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         /// CPython copies `size` bytes out of the caller's buffer, so a wrong size is a read out of bounds.
         fn copyOf(bytes: ?[*]const u8, size: c.Py_ssize_t) ?*c.PyObject {
             verifier.assert(size >= 0);
-            var sum: u8 = 0;
-            for (bytes.?[0..@intCast(size)]) |byte| sum +%= byte;
+            // Touching both ends checks the whole range without a loop over it.
+            if (size != 0) _ = bytes.?[0] +% bytes.?[@intCast(size - 1)];
             return newReference();
         }
 
@@ -258,7 +278,186 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             return number.int;
         }
 
+        fn bufferRelease(view: ?*c.Py_buffer) callconv(.c) void {
+            if (view.?.obj == null) return;
+            view.?.obj = null;
+            buffer_releases += 1;
+        }
+
+        /// Any call into Python. It runs arbitrary code, but the model does not have that code
+        /// call back into the code under test.
+        fn call() ?*c.PyObject {
+            return newReference();
+        }
+
+        fn callNoArgs(callable: ?*c.PyObject) callconv(.c) ?*c.PyObject {
+            _ = callable;
+            return call();
+        }
+
+        fn callOneArg(callable: ?*c.PyObject, argument: ?*c.PyObject) callconv(.c) ?*c.PyObject {
+            _ = callable;
+            _ = argument;
+            return call();
+        }
+
+        fn vectorcall(
+            callable: ?*c.PyObject,
+            arguments: ?[*]const ?*c.PyObject,
+            count: usize,
+            names: ?*c.PyObject,
+        ) callconv(.c) ?*c.PyObject {
+            _ = callable;
+            _ = arguments;
+            _ = count;
+            _ = names;
+            return call();
+        }
+
+        fn vectorcallMethod(
+            name: ?*c.PyObject,
+            arguments: ?[*]const ?*c.PyObject,
+            count: usize,
+            names: ?*c.PyObject,
+        ) callconv(.c) ?*c.PyObject {
+            _ = name;
+            _ = arguments;
+            _ = count;
+            _ = names;
+            return call();
+        }
+
+        fn contextNew() callconv(.c) ?*c.PyObject {
+            return newReference();
+        }
+
+        fn contextEnter(context: ?*c.PyObject) callconv(.c) c_int {
+            _ = context;
+            return status();
+        }
+
+        fn dictNew() callconv(.c) ?*c.PyObject {
+            return newReference();
+        }
+
+        fn dictSetItem(dict: ?*c.PyObject, key: ?*c.PyObject, value: ?*c.PyObject) callconv(.c) c_int {
+            _ = dict;
+            _ = key;
+            _ = value;
+            return status();
+        }
+
+        fn floatFromDouble(value: f64) callconv(.c) ?*c.PyObject {
+            _ = value;
+            return newReference();
+        }
+
+        fn objectSize(object: ?*c.PyObject) callconv(.c) c.Py_ssize_t {
+            _ = object;
+            if (status() != 0) return -1;
+            const size = verifier.any(c.Py_ssize_t);
+            verifier.assume(size >= 0);
+            return size;
+        }
+
+        fn objectGetItemData(object: ?*c.PyObject) callconv(.c) ?*anyopaque {
+            _ = object;
+            return &instance;
+        }
+
+        fn typeGenericAlloc(object_type: ?*c.PyTypeObject, count: c.Py_ssize_t) callconv(.c) ?*c.PyObject {
+            _ = count;
+            if (verifier.any(bool)) {
+                error_set = true;
+                return null;
+            }
+            instance = @splat(0);
+            const object: *c.PyObject = @ptrCast(&instance);
+            const reference_count: *usize = @ptrCast(object);
+            reference_count.* = 1;
+            object.ob_type = object_type;
+            return object;
+        }
+
+        fn errClear() callconv(.c) void {
+            error_set = false;
+        }
+
+        fn errExceptionMatches(exception: ?*c.PyObject) callconv(.c) c_int {
+            _ = exception;
+            return @intFromBool(verifier.any(bool));
+        }
+
+        fn errGetRaisedException() callconv(.c) ?*c.PyObject {
+            if (!error_set) return null;
+            error_set = false;
+            const exception = create(.other, true);
+            return @ptrCast(exception);
+        }
+
+        /// Steals the reference to `exception`.
+        fn errSetRaisedException(exception: ?*c.PyObject) callconv(.c) void {
+            error_set = true;
+            const stolen = cast(exception);
+            verifier.assert(stolen.owned);
+            stolen.owned = false;
+            owned_references -= 1;
+        }
+
+        fn errNoMemory() callconv(.c) ?*c.PyObject {
+            error_set = true;
+            return null;
+        }
+
+        fn errWriteUnraisable(object: ?*c.PyObject) callconv(.c) void {
+            _ = object;
+            error_set = false;
+        }
+
+        fn evalSaveThread() callconv(.c) ?*c.PyThreadState {
+            return @ptrCast(&thread_state);
+        }
+
+        fn evalRestoreThread(state: ?*c.PyThreadState) callconv(.c) void {
+            _ = state;
+        }
+
+        fn threadGetIdent() callconv(.c) c_ulong {
+            return verifier.any(c_ulong);
+        }
+
+        fn threadReleaseLock(lock: ?*anyopaque) callconv(.c) void {
+            _ = lock;
+        }
+
         comptime {
+            @export(&bufferRelease, .{ .name = "PyBuffer_Release" });
+            @export(&callNoArgs, .{ .name = "PyObject_CallNoArgs" });
+            @export(&callOneArg, .{ .name = "PyObject_CallOneArg" });
+            @export(&vectorcall, .{ .name = "PyObject_Vectorcall" });
+            @export(&vectorcallMethod, .{ .name = "PyObject_VectorcallMethod" });
+            @export(&contextNew, .{ .name = "PyContext_New" });
+            @export(&contextNew, .{ .name = "PyContext_CopyCurrent" });
+            @export(&contextEnter, .{ .name = "PyContext_Enter" });
+            @export(&contextEnter, .{ .name = "PyContext_Exit" });
+            @export(&dictNew, .{ .name = "PyDict_New" });
+            @export(&dictSetItem, .{ .name = "PyDict_SetItem" });
+            @export(&floatFromDouble, .{ .name = "PyFloat_FromDouble" });
+            @export(&objectSize, .{ .name = "PyObject_Size" });
+            @export(&objectGetItemData, .{ .name = "PyObject_GetItemData" });
+            @export(&typeGenericAlloc, .{ .name = "PyType_GenericAlloc" });
+            @export(&errClear, .{ .name = "PyErr_Clear" });
+            @export(&errExceptionMatches, .{ .name = "PyErr_ExceptionMatches" });
+            @export(&errGetRaisedException, .{ .name = "PyErr_GetRaisedException" });
+            @export(&errSetRaisedException, .{ .name = "PyErr_SetRaisedException" });
+            @export(&errNoMemory, .{ .name = "PyErr_NoMemory" });
+            @export(&errWriteUnraisable, .{ .name = "PyErr_WriteUnraisable" });
+            @export(&evalSaveThread, .{ .name = "PyEval_SaveThread" });
+            @export(&evalSaveThread, .{ .name = "PyThreadState_Get" });
+            @export(&evalRestoreThread, .{ .name = "PyEval_RestoreThread" });
+            @export(&threadGetIdent, .{ .name = "PyThread_get_thread_ident" });
+            @export(&threadReleaseLock, .{ .name = "PyThread_release_lock" });
+            @export(&bytesFromStringAndSize, .{ .name = "PyUnicode_FromStringAndSize" });
             @export(&typeOf, .{ .name = "Py_TYPE" });
             @export(&dealloc, .{ .name = "_Py_Dealloc" });
             @export(&getConstantBorrowed, .{ .name = "Py_GetConstantBorrowed" });

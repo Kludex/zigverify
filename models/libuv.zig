@@ -47,9 +47,13 @@ export fn uv_strerror_r(err: c_int, buf: [*]u8, buflen: usize) [*:0]u8 {
     return @ptrCast(buf);
 }
 
+/// The longest name or message a model writes. Real ones can fill the buffer; a short bound
+/// keeps the loops that read the text back short.
+const max_text = 15;
+
 fn terminated(buffer: []u8) void {
-    for (buffer) |*byte| byte.* = verifier.any(u8);
+    verifier.fill(buffer);
     const end = verifier.any(usize);
-    verifier.assume(end < buffer.len);
+    verifier.assume(end < buffer.len and end <= max_text);
     buffer[end] = 0;
 }

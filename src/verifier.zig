@@ -70,6 +70,11 @@ pub fn any(comptime T: type) T {
     }
 }
 
+/// Overwrites `bytes` with arbitrary values, in one step however long it is.
+pub fn fill(bytes: []u8) void {
+    verifier_any(bytes.ptr, bytes.len);
+}
+
 /// Fills `buffer` with arbitrary items and returns an arbitrary-length prefix of it, so one
 /// proof covers every input from empty up to `buffer.len` items.
 pub fn prefix(comptime T: type, buffer: []T) []T {

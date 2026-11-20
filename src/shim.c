@@ -13,3 +13,8 @@ void verifier_check(_Bool ok) {
 void verifier_assume(_Bool ok) { __CPROVER_assume(ok); }
 
 void verifier_any(void *out, size_t len) { __CPROVER_havoc_slice(out, len); }
+
+/* Stands in for glibc's `__assert_fail`. 29 is `Kind.c_assert` in failure.zig. */
+void verifier_assert_fail(const char *assertion, const char *file, unsigned int line, const char *function) {
+    verifier_fail(29, line, 0);
+}

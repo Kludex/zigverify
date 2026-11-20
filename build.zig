@@ -157,7 +157,11 @@ pub fn build(b: *std.Build) void {
         _ = sources.addCopyDirectory(.{ .cwd_relative = b.pathJoin(&.{ zuvloop_source.?, "zig" }) }, "zig", .{});
         const root = sources.add(
             "zuvloop.zig",
-            "pub const py = @import(\"zig/py.zig\");\npub const addr = @import(\"zig/addr.zig\");\n",
+            "pub const py = @import(\"zig/py.zig\");\n" ++
+                "pub const addr = @import(\"zig/addr.zig\");\n" ++
+                "pub const uv = @import(\"zig/uv.zig\");\n" ++
+                "pub const loop = @import(\"zig/loop.zig\");\n" ++
+                "pub const transport = @import(\"zig/transport.zig\");\n",
         );
         const zuvloop = b.createModule(.{ .root_source_file = root, .link_libc = true });
         zuvloop.addIncludePath(.{ .cwd_relative = python_include.? });
@@ -166,17 +170,32 @@ pub fn build(b: *std.Build) void {
         cpython.addImport("verifier", prover.verifier);
         const libuv = b.createModule(.{ .root_source_file = b.path("models/libuv.zig") });
         libuv.addImport("verifier", prover.verifier);
-        prover.add(b.step("verify-zuvloop", "Prove zuvloop's address conversion against the models"), .{
-            .root_source_file = b.path("integration/zuvloop.zig"),
-            .imports = &.{
-                .{ .name = "zuvloop", .module = zuvloop },
-                .{ .name = "cpython", .module = cpython },
-                .{ .name = "libuv", .module = libuv },
-            },
+        const libuv_stream = b.createModule(.{ .root_source_file = b.path("models/libuv_stream.zig") });
+        libuv_stream.addImport("verifier", prover.verifier);
+        const zuvloop_imports: []const std.Build.Module.Import = &.{
+            .{ .name = "libuv_stream", .module = libuv_stream },
+            .{ .name = "zuvloop", .module = zuvloop },
+            .{ .name = "cpython", .module = cpython },
+            .{ .name = "libuv", .module = libuv },
+        };
+        const zuvloop_step = b.step("verify-zuvloop", "Prove properties of zuvloop against the CPython and libuv models");
+        prover.add(zuvloop_step, .{
+            .root_source_file = b.path("integration/zuvloop_transport.zig"),
+            .imports = zuvloop_imports,
             .proofs = &.{
-                .{ .function = "unix_address_from_python_is_safe", .unwind = 130 },
-                .{ .function = "ip_address_from_python_is_safe", .unwind = 130 },
-                .{ .function = "non_tuple_from_python_is_safe", .unwind = 130 },
+                .{ .function = "flush_releases_buffers_when_the_socket_takes_everything", .unwind = 20 },
+                .{ .function = "flush_releases_buffers_when_the_write_is_queued", .unwind = 20 },
+                .{ .function = "flush_releases_buffers_when_the_socket_fails", .unwind = 20 },
+                .{ .function = "flush_releases_buffers_when_the_transport_is_closing", .unwind = 20 },
+            },
+        });
+        prover.add(zuvloop_step, .{
+            .root_source_file = b.path("integration/zuvloop.zig"),
+            .imports = zuvloop_imports,
+            .proofs = &.{
+                .{ .function = "unix_address_from_python_is_safe", .unwind = 20 },
+                .{ .function = "ip_address_from_python_is_safe", .unwind = 20 },
+                .{ .function = "non_tuple_from_python_is_safe", .unwind = 20 },
                 .{ .function = "to_python_is_safe", .unwind = 130 },
             },
         });

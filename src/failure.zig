@@ -31,6 +31,7 @@ pub const Kind = enum(u32) {
     noreturn_returned,
     invalid_free,
     leak,
+    c_assert,
 
     /// A sentence for the report. `{a}` and `{b}` stand for the two operands the check carries.
     pub fn describe(kind: Kind) []const u8 {
@@ -64,6 +65,7 @@ pub const Kind = enum(u32) {
             .noreturn_returned => "'noreturn' function returned",
             .invalid_free => "free of memory that is not live: a double free, or a pointer the allocator never returned",
             .leak => "an allocation is still live at the end: a leak",
+            .c_assert => "assert() failed in C code, at line {a} of its file",
         };
     }
 };

@@ -187,6 +187,9 @@ pub fn build(b: *std.Build) void {
                 .{ .function = "flush_releases_buffers_when_the_write_is_queued", .unwind = 20 },
                 .{ .function = "flush_releases_buffers_when_the_socket_fails", .unwind = 20 },
                 .{ .function = "flush_releases_buffers_when_the_transport_is_closing", .unwind = 20 },
+                .{ .function = "fifth_write_is_kept", .unwind = 40 },
+                // A bug in zuvloop at the time of writing. Drop `.expect` once it is fixed there.
+                .{ .function = "fifth_write_is_kept_when_pause_writing_closes", .unwind = 40, .expect = .refuted },
             },
         });
         prover.add(zuvloop_step, .{

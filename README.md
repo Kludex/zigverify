@@ -143,31 +143,45 @@ const cpython = @import("cpython").Model(zuvloop.py.c, 16);
 ```
 
 `models/libuv_stream.zig` is instantiated the same way, with the code's own declarations of
-libuv, and takes each parameter type from them. Its callbacks are recorded, not run, and a
-call into Python does not call back into the code under test: reentrancy is not modelled.
+libuv, and takes each parameter type from them. Its callbacks are recorded, not run.
+
+A call into Python runs no code by default. Set `cpython.on_call` to a function and every
+modelled call runs it first, which is how a harness has a protocol callback reenter the
+code under test. `cpython.method("write")` returns the C function behind a method of the
+type the code registered, so the harness calls it the way the interpreter would.
+
+Both models have a `failures` switch. Turned off, every call that can fail succeeds, the
+checker follows one path, and a scenario of many calls finishes in seconds.
 
 The `integration` directory uses the models on a real extension, zuvloop. Run it with
 `zig build verify-zuvloop -Dzuvloop=<checkout> -Dpython-include=<dir>`.
 
 | Proof | Time |
 | --- | --- |
-| A kernel address becomes a Python address without panicking or reading out of bounds | 95s |
-| A Unix path or name, as text or bytes, becomes a socket address safely | 43s |
-| A `(host, port[, flowinfo, scope_id])` tuple of any contents becomes a socket address safely | 9 min |
-| An object that is not a tuple is rejected with a Python error | 5 min |
-| Flushing writes releases every buffer when the socket takes everything | 4s |
-| ... when the socket fails | 4s |
-| ... when the transport is closing | 4s |
-| ... when the write is queued | 17 min |
+| A kernel address becomes a Python address without panicking or reading out of bounds | 112s |
+| A Unix path or name, as text or bytes, becomes a socket address safely | 18s |
+| A `(host, port[, flowinfo, scope_id])` tuple of any contents becomes a socket address safely | 7.5 min |
+| An object that is not a tuple is rejected with a Python error | 21s |
+| Flushing writes releases every buffer when the socket takes everything | 11s |
+| ... when the socket fails | 11s |
+| ... when the transport is closing | 11s |
+| ... when the write is queued, and Python calls succeed | 3.7 min |
+| Five writes in one iteration are all kept | 11s |
+| ... and still kept when `pause_writing` calls `close()` | refuted in 15s |
 
-Pass `-j1` to run them one at a time: the largest needs most of 20 GB.
+The last one is a real bug. The fifth `write()` flushes a full batch, the flush pauses the
+protocol, and if the protocol closes the transport from `pause_writing`, the byte of that
+fifth write is released without being sent, although `write()` reported success.
+
+Pass `-j1` to run them one at a time, which takes about 15 minutes: together they need
+more memory than most machines have.
 
 Each flush proof fixes what the socket answers. One proof over every answer at once does
 not fit in memory, and neither does one over every Python object: split a proof by case
 when the cases take different paths through the code.
 
 The proofs are bounded by the models: text and bytes of up to 16 bytes, tuples of up to
-four items, two pending writes of two bytes each, and callbacks that are not run.
+four items, two pending writes of two bytes each, and libuv callbacks that are not run.
 
 An `assert()` in a translated C header is checked too. A failing one is reported as
 `assert() failed in C code`, with its line.

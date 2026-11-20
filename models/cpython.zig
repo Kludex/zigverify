@@ -30,11 +30,26 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         };
 
         var types: [@typeInfo(Kind).@"enum".fields.len]c.PyTypeObject = undefined;
-        var pool: [24]Object = undefined;
+        var pool: [48]Object = undefined;
         var used: usize = 0;
         var error_set = false;
         var owned_references: usize = 0;
         var buffer_releases: usize = 0;
+        var spec: ?*c.PyType_Spec = null;
+        /// The type of every bytes object, exported as CPython's own `PyBytes_Type` so that
+        /// `PyBytes_CheckExact` holds for them.
+        var bytes_type: c.PyTypeObject = undefined;
+        var created_type: c.PyTypeObject = undefined;
+
+        /// Whether calls that can fail may do so. Turning it off follows one path, the one
+        /// where the interpreter is healthy, and is what makes a long scenario affordable.
+        pub var failures = true;
+        /// Runs inside every modelled call into Python, standing in for the Python code that
+        /// call would run. This is how a harness has a protocol callback reenter the code.
+        pub var on_call: ?*const fn () void = null;
+        /// What every attribute lookup returns: an immortal object laid out as a type, whose
+        /// fields the harness may set to what the code under test expects of the attribute.
+        pub var attribute: c.PyTypeObject = undefined;
         /// What `PyType_GenericAlloc` hands out: zeroed memory for one instance of an extension type.
         var instance: [1024]u8 align(16) = undefined;
         var thread_state: [64]u8 align(16) = undefined;
@@ -51,6 +66,16 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
                     .none, .false, .true, .other => 0,
                 };
             }
+            bytes_type = std.mem.zeroes(c.PyTypeObject);
+            bytes_type.tp_flags = c.Py_TPFLAGS_BYTES_SUBCLASS;
+            inline for (.{ &attribute, &created_type }) |immortal| {
+                immortal.* = std.mem.zeroes(c.PyTypeObject);
+                const count: *usize = @ptrCast(immortal);
+                count.* = 0xC0000000;
+            }
+            spec = null;
+            failures = true;
+            on_call = null;
             used = 0;
             error_set = false;
             owned_references = 0;
@@ -74,6 +99,24 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             // CPython terminates the buffer of every text and bytes object.
             object.text[object.len] = 0;
             return @ptrCast(object);
+        }
+
+        /// A bytes object of exactly `len` arbitrary bytes.
+        pub fn anyBytes(comptime len: usize) *c.PyObject {
+            const object = create(.bytes, false);
+            object.len = len;
+            object.text = verifier.any([max_text + 1]u8);
+            object.text[len] = 0;
+            return @ptrCast(object);
+        }
+
+        /// The C function behind the method `name` of the type the code under test registered.
+        pub fn method(comptime name: []const u8) c.PyCFunction {
+            var slot = spec.?.slots;
+            while (slot[0].slot != c.Py_tp_methods) slot += 1;
+            var definition: [*]c.PyMethodDef = @ptrCast(@alignCast(slot[0].pfunc.?));
+            while (!std.mem.eql(u8, std.mem.span(definition[0].ml_name.?), name)) definition += 1;
+            return definition[0].ml_meth;
         }
 
         /// An arbitrary tuple of up to four items, each `None` or an arbitrary value.
@@ -114,7 +157,7 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             // immortal, which CPython marks with the top bits of the low half.
             const count: *usize = @ptrCast(&object.head);
             count.* = if (used <= 3) 0xC0000000 else 1;
-            object.head.ob_type = &types[@intFromEnum(kind)];
+            object.head.ob_type = if (kind == .bytes) &bytes_type else &types[@intFromEnum(kind)];
             object.kind = kind;
             object.owned = owned;
             object.len = 0;
@@ -128,7 +171,7 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         fn newReference() ?*c.PyObject {
             // Taken from the pool before deciding, for the reason given in `anyObject`.
             const object = create(.other, false);
-            if (verifier.any(bool)) {
+            if (failures and verifier.any(bool)) {
                 error_set = true;
                 return null;
             }
@@ -143,7 +186,7 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
 
         /// A call that may fail, reporting it as -1 with an error set.
         fn status() c_int {
-            if (verifier.any(bool)) return 0;
+            if (!failures or verifier.any(bool)) return 0;
             error_set = true;
             return -1;
         }
@@ -180,7 +223,61 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         fn getAttrString(object: ?*c.PyObject, name: ?[*:0]const u8) callconv(.c) ?*c.PyObject {
             _ = object;
             _ = name;
+            if (status() != 0) return null;
+            return @ptrCast(&attribute);
+        }
+
+        fn internFromString(text: ?[*:0]const u8) callconv(.c) ?*c.PyObject {
+            _ = text;
             return newReference();
+        }
+
+        fn tuplePack(count: c.Py_ssize_t, ...) callconv(.c) ?*c.PyObject {
+            _ = count;
+            return newReference();
+        }
+
+        fn typeFromModuleAndSpec(
+            module: ?*c.PyObject,
+            type_spec: ?*c.PyType_Spec,
+            bases: ?*c.PyObject,
+        ) callconv(.c) ?*c.PyObject {
+            _ = module;
+            _ = bases;
+            if (status() != 0) return null;
+            spec = type_spec;
+            created_type.tp_basicsize = type_spec.?.basicsize;
+            return @ptrCast(&created_type);
+        }
+
+        fn moduleAddObjectRef(module: ?*c.PyObject, name: ?[*:0]const u8, value: ?*c.PyObject) callconv(.c) c_int {
+            _ = module;
+            _ = name;
+            _ = value;
+            return status();
+        }
+
+        fn moduleAddIntConstant(module: ?*c.PyObject, name: ?[*:0]const u8, value: c_long) callconv(.c) c_int {
+            _ = module;
+            _ = name;
+            _ = value;
+            return status();
+        }
+
+        /// A view of a bytes or text object's contents. The view pins its owner until released.
+        fn getBuffer(object: ?*c.PyObject, view: ?*c.Py_buffer, flags: c_int) callconv(.c) c_int {
+            _ = flags;
+            const exporter = cast(object);
+            if ((exporter.kind != .bytes and exporter.kind != .text) or status() != 0) {
+                error_set = true;
+                view.?.obj = null;
+                return -1;
+            }
+            view.?.* = std.mem.zeroes(c.Py_buffer);
+            view.?.buf = &exporter.text;
+            view.?.len = @intCast(exporter.len);
+            view.?.obj = object;
+            return 0;
         }
 
         fn bytesFromStringAndSize(bytes: ?[*]const u8, size: c.Py_ssize_t) callconv(.c) ?*c.PyObject {
@@ -287,6 +384,7 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         /// Any call into Python. It runs arbitrary code, but the model does not have that code
         /// call back into the code under test.
         fn call() ?*c.PyObject {
+            if (on_call) |callback| callback();
             return newReference();
         }
 
@@ -431,6 +529,13 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         }
 
         comptime {
+            @export(&bytes_type, .{ .name = "PyBytes_Type" });
+            @export(&internFromString, .{ .name = "PyUnicode_InternFromString" });
+            @export(&tuplePack, .{ .name = "PyTuple_Pack" });
+            @export(&typeFromModuleAndSpec, .{ .name = "PyType_FromModuleAndSpec" });
+            @export(&moduleAddObjectRef, .{ .name = "PyModule_AddObjectRef" });
+            @export(&moduleAddIntConstant, .{ .name = "PyModule_AddIntConstant" });
+            @export(&getBuffer, .{ .name = "PyObject_GetBuffer" });
             @export(&bufferRelease, .{ .name = "PyBuffer_Release" });
             @export(&callNoArgs, .{ .name = "PyObject_CallNoArgs" });
             @export(&callOneArg, .{ .name = "PyObject_CallOneArg" });

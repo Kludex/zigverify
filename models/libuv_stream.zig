@@ -20,6 +20,9 @@ pub fn Model(comptime uv: type) type {
         pub const Socket = enum { anything, takes_everything, takes_part, would_block, fails };
 
         pub var socket: Socket = .anything;
+        /// Whether a queued write, a shutdown or the queue size may come out more than one way.
+        /// Turning it off accepts every request and reports the queue exactly.
+        pub var failures = true;
 
         var queued_writes: usize = 0;
         var queued_bytes: usize = 0;
@@ -29,6 +32,7 @@ pub fn Model(comptime uv: type) type {
         /// Call first. Starts from a stream with nothing queued and an open handle.
         pub fn reset() void {
             socket = .anything;
+            failures = true;
             queued_writes = 0;
             queued_bytes = 0;
             closes = 0;
@@ -38,6 +42,11 @@ pub fn Model(comptime uv: type) type {
         /// How many write requests libuv accepted and has not completed.
         pub fn queuedWrites() usize {
             return queued_writes;
+        }
+
+        /// How many bytes libuv holds in accepted write requests.
+        pub fn queuedBytes() usize {
+            return queued_bytes;
         }
 
         /// How many times a handle was closed. Closing one twice aborts the real libuv.
@@ -98,7 +107,7 @@ pub fn Model(comptime uv: type) type {
             _ = callback;
             verifier.assert(closes == 0);
             const bytes = total(buffers, count);
-            if (verifier.any(bool)) return epipe;
+            if (failures and verifier.any(bool)) return epipe;
             queued_writes += 1;
             queued_bytes += bytes;
             return 0;
@@ -106,6 +115,7 @@ pub fn Model(comptime uv: type) type {
 
         fn streamGetWriteQueueSize(stream: Parameter(uv.uv_stream_get_write_queue_size, 0)) callconv(.c) usize {
             _ = stream;
+            if (!failures) return queued_bytes;
             const size = verifier.any(usize);
             verifier.assume(size <= queued_bytes);
             return size;
@@ -119,7 +129,7 @@ pub fn Model(comptime uv: type) type {
             _ = request;
             _ = stream;
             _ = callback;
-            if (closes != 0 or shutdowns != 0 or verifier.any(bool)) return epipe;
+            if (closes != 0 or shutdowns != 0 or (failures and verifier.any(bool))) return epipe;
             shutdowns += 1;
             return 0;
         }
@@ -145,6 +155,24 @@ pub fn Model(comptime uv: type) type {
         fn reqSize(kind: Parameter(uv.uv_req_size, 0)) callconv(.c) usize {
             _ = kind;
             return 192;
+        }
+
+        fn handleSize(kind: Parameter(uv.uv_handle_size, 0)) callconv(.c) usize {
+            _ = kind;
+            return 256;
+        }
+
+        fn prepareStart(
+            prepare: Parameter(uv.uv_prepare_start, 0),
+            callback: Parameter(uv.uv_prepare_start, 1),
+        ) callconv(.c) c_int {
+            _ = prepare;
+            _ = callback;
+            return 0;
+        }
+
+        fn unref(handle: Parameter(uv.uv_unref, 0)) callconv(.c) void {
+            _ = handle;
         }
 
         fn stop(loop: Parameter(uv.uv_stop, 0)) callconv(.c) void {
@@ -175,6 +203,9 @@ pub fn Model(comptime uv: type) type {
             @export(&isClosing, .{ .name = "uv_is_closing" });
             @export(&readStop, .{ .name = "uv_read_stop" });
             @export(&reqSize, .{ .name = "uv_req_size" });
+            @export(&handleSize, .{ .name = "uv_handle_size" });
+            @export(&prepareStart, .{ .name = "uv_prepare_start" });
+            @export(&unref, .{ .name = "uv_unref" });
             @export(&stop, .{ .name = "uv_stop" });
             @export(&hrtime, .{ .name = "uv_hrtime" });
             @export(&idleStart, .{ .name = "uv_idle_start" });

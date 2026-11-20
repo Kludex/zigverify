@@ -48,11 +48,15 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         /// Runs inside every modelled call into Python, standing in for the Python code that
         /// call would run. This is how a harness has a protocol callback reenter the code.
         pub var on_call: ?*const fn () void = null;
+        /// What every modelled call into Python returns, as a new reference. Null means a fresh
+        /// opaque object.
+        pub var call_result: ?*c.PyObject = null;
         /// What every attribute lookup returns: an immortal object laid out as a type, whose
         /// fields the harness may set to what the code under test expects of the attribute.
         pub var attribute: c.PyTypeObject = undefined;
-        /// What `PyType_GenericAlloc` hands out: zeroed memory for one instance of an extension type.
-        var instance: [1024]u8 align(16) = undefined;
+        /// What `PyType_GenericAlloc` hands out: zeroed memory for instances of extension types.
+        var instances: [4][2048]u8 align(16) = undefined;
+        var instances_used: usize = 0;
         /// The current thread's state, with no context entered. Code that reads its fields
         /// directly, as some does for speed, finds them all zero. The struct does not survive
         /// translation from C, so this is a block larger than any version of it.
@@ -86,6 +90,8 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             owned_references = 0;
             buffer_releases = 0;
             calls_made = 0;
+            instances_used = 0;
+            call_result = null;
             // The constants take the first three slots, so `Py_GetConstantBorrowed` can index them.
             _ = create(.none, false);
             _ = create(.false, false);
@@ -216,7 +222,8 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
 
         fn dealloc(object: ?*c.PyObject) callconv(.c) void {
             // An instance from `PyType_GenericAlloc` is the code's own to release.
-            if (@intFromPtr(object.?) == @intFromPtr(&instance)) return;
+            const address = @intFromPtr(object.?);
+            if (address >= @intFromPtr(&instances) and address < @intFromPtr(&instances) + @sizeOf(@TypeOf(instances))) return;
             const released = cast(object);
             // Reaching zero on a borrowed object means the code released a reference it never had.
             verifier.assert(released.owned);
@@ -244,6 +251,13 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             _ = name;
             if (status() != 0) return null;
             return @ptrCast(&attribute);
+        }
+
+        fn longFromLongLong(value: c_longlong) callconv(.c) ?*c.PyObject {
+            const object = newReference() orelse return null;
+            cast(object).kind = .int;
+            cast(object).int = @intCast(value);
+            return object;
         }
 
         fn internFromString(text: ?[*:0]const u8) callconv(.c) ?*c.PyObject {
@@ -405,6 +419,11 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         fn call() ?*c.PyObject {
             calls_made += 1;
             if (on_call) |callback| callback();
+            if (call_result) |result| {
+                // Taken from the pool all the same, to keep later pool positions fixed.
+                _ = create(.other, false);
+                return again(cast(result));
+            }
             return newReference();
         }
 
@@ -516,18 +535,20 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         }
 
         fn objectGetItemData(object: ?*c.PyObject) callconv(.c) ?*anyopaque {
-            _ = object;
-            return &instance;
+            return object;
         }
 
         fn typeGenericAlloc(object_type: ?*c.PyTypeObject, count: c.Py_ssize_t) callconv(.c) ?*c.PyObject {
             _ = count;
-            if (verifier.any(bool)) {
+            verifier.assert(instances_used < instances.len);
+            const instance = &instances[instances_used];
+            instances_used += 1;
+            if (failures and verifier.any(bool)) {
                 error_set = true;
                 return null;
             }
-            instance = @splat(0);
-            const object: *c.PyObject = @ptrCast(&instance);
+            instance.* = @splat(0);
+            const object: *c.PyObject = @ptrCast(instance);
             const reference_count: *usize = @ptrCast(object);
             reference_count.* = 1;
             object.ob_type = object_type;
@@ -586,6 +607,7 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         }
 
         comptime {
+            @export(&longFromLongLong, .{ .name = "PyLong_FromLongLong" });
             @export(&objectIsTrue, .{ .name = "PyObject_IsTrue" });
             @export(&sequenceFast, .{ .name = "PySequence_Fast" });
             @export(&sequenceGetItem, .{ .name = "PySequence_GetItem" });

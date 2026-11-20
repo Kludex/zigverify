@@ -197,6 +197,8 @@ pub fn build(b: *std.Build) void {
                 .{ .function = "writelines_batches_every_buffer", .unwind = 40 },
                 .{ .function = "write_buffer_limits_default_to_64k_and_16k", .unwind = 40 },
                 .{ .function = "read_delivers_data_and_eof_closes_once", .unwind = 40 },
+                .{ .function = "pause_and_resume_reading_stop_and_restart_reads", .unwind = 40 },
+                .{ .function = "buffered_read_fills_the_protocols_buffer", .unwind = 40 },
                 // A bug in zuvloop at the time of writing. Drop `.expect` once it is fixed there.
                 .{ .function = "fifth_write_is_kept_when_pause_writing_closes", .unwind = 40, .expect = .refuted },
             },

@@ -308,3 +308,36 @@ export fn read_delivers_data_and_eof_closes_once() void {
     verifier.assert(stream.handleCloses() == 1);
     stream.deliverClose();
 }
+
+/// `pause_reading()` stops libuv reading and `resume_reading()` starts it again, after which
+/// data still reaches the protocol.
+export fn pause_and_resume_reading_stop_and_restart_reads() void {
+    const transport = openTransport();
+    transport.cb_data_received = @ptrCast(cpython.anyValue());
+    transport.read_size = 16 * 1024;
+    verifier.assert(cpython.method("_start_reading").?(@ptrCast(transport), null) != null);
+    verifier.assert(cpython.method("pause_reading").?(@ptrCast(transport), null) != null);
+    verifier.assert(!stream.reading());
+    verifier.assert(cpython.method("resume_reading").?(@ptrCast(transport), null) != null);
+    verifier.assert(stream.reading());
+    const before = cpython.calls();
+    stream.deliverRead(3);
+    verifier.assert(cpython.calls() == before + 1);
+}
+
+/// For a buffered protocol, a read asks `get_buffer` for memory, lets libuv fill it, reports
+/// the count through `buffer_updated`, and releases the view of the buffer exactly once.
+export fn buffered_read_fills_the_protocols_buffer() void {
+    const transport = openTransport();
+    // The transport's `BUFFERED` flag, which is private to it.
+    transport.flags |= 1 << 4;
+    transport.cb_get_buffer = @ptrCast(cpython.anyValue());
+    transport.cb_buffer_updated = @ptrCast(cpython.anyValue());
+    cpython.call_result = cpython.anyBytes(4);
+    verifier.assert(cpython.method("_start_reading").?(@ptrCast(transport), null) != null);
+    const before = cpython.calls();
+    stream.deliverRead(2);
+    verifier.assert(cpython.calls() == before + 2);
+    verifier.assert(cpython.releasedBuffers() == 1);
+    verifier.assert(stream.handleCloses() == 0);
+}

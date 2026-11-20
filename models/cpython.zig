@@ -35,6 +35,7 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         var error_set = false;
         var owned_references: usize = 0;
         var buffer_releases: usize = 0;
+        var calls_made: usize = 0;
         var spec: ?*c.PyType_Spec = null;
         /// The type of every bytes object, exported as CPython's own `PyBytes_Type` so that
         /// `PyBytes_CheckExact` holds for them.
@@ -84,6 +85,7 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             error_set = false;
             owned_references = 0;
             buffer_releases = 0;
+            calls_made = 0;
             // The constants take the first three slots, so `Py_GetConstantBorrowed` can index them.
             _ = create(.none, false);
             _ = create(.false, false);
@@ -134,6 +136,19 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
                 const value = anyValue();
                 tuple.items[index] = if (verifier.any(bool)) &pool[@intFromEnum(Kind.none)] else @ptrCast(@alignCast(value));
             }
+            return @ptrCast(tuple);
+        }
+
+        /// How many times the code has called into Python: callbacks, methods, any callable.
+        pub fn calls() usize {
+            return calls_made;
+        }
+
+        /// A tuple of exactly these items.
+        pub fn tupleOf(items: []const *c.PyObject) *c.PyObject {
+            const tuple = create(.tuple, false);
+            tuple.len = items.len;
+            for (items, 0..) |item, index| tuple.items[index] = @ptrCast(@alignCast(item));
             return @ptrCast(tuple);
         }
 
@@ -388,6 +403,7 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         /// Any call into Python. It runs arbitrary code, but the model does not have that code
         /// call back into the code under test.
         fn call() ?*c.PyObject {
+            calls_made += 1;
             if (on_call) |callback| callback();
             return newReference();
         }
@@ -427,6 +443,43 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             _ = count;
             _ = names;
             return call();
+        }
+
+        /// With `failures` off, every object is falsy: a callback that returns nothing.
+        fn objectIsTrue(object: ?*c.PyObject) callconv(.c) c_int {
+            _ = object;
+            if (!failures) return 0;
+            const truth = verifier.any(c_int);
+            verifier.assume(truth >= -1 and truth <= 1);
+            if (truth < 0) error_set = true;
+            return truth;
+        }
+
+        /// A new reference to an object the code already had: the count goes up, so the
+        /// release that follows does not look like releasing a borrowed reference.
+        fn again(object: *Object) ?*c.PyObject {
+            const count: *usize = @ptrCast(&object.head);
+            count.* += 1;
+            return @ptrCast(object);
+        }
+
+        fn sequenceFast(object: ?*c.PyObject, message: ?[*:0]const u8) callconv(.c) ?*c.PyObject {
+            _ = message;
+            const sequence = cast(object);
+            if (sequence.kind != .tuple or status() != 0) {
+                error_set = true;
+                return null;
+            }
+            return again(sequence);
+        }
+
+        fn sequenceGetItem(object: ?*c.PyObject, index: c.Py_ssize_t) callconv(.c) ?*c.PyObject {
+            const sequence = cast(object);
+            if (sequence.kind != .tuple or index < 0 or index >= sequence.len) {
+                error_set = true;
+                return null;
+            }
+            return again(sequence.items[@intCast(index)].?);
         }
 
         fn contextNew() callconv(.c) ?*c.PyObject {
@@ -533,6 +586,10 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         }
 
         comptime {
+            @export(&objectIsTrue, .{ .name = "PyObject_IsTrue" });
+            @export(&sequenceFast, .{ .name = "PySequence_Fast" });
+            @export(&sequenceGetItem, .{ .name = "PySequence_GetItem" });
+            @export(&tupleSize, .{ .name = "PySequence_Size" });
             @export(&bytes_type, .{ .name = "PyBytes_Type" });
             @export(&internFromString, .{ .name = "PyUnicode_InternFromString" });
             @export(&tuplePack, .{ .name = "PyTuple_Pack" });

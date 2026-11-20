@@ -35,6 +35,10 @@ pub fn Model(comptime uv: type) type {
         var queue: [4]Queued = undefined;
         var completed_writes: usize = 0;
         var accepted_bytes: usize = 0;
+        var read_stream: Parameter(uv.uv_read_start, 0) = undefined;
+        var alloc_callback: Parameter(uv.uv_read_start, 1) = undefined;
+        var read_callback: Parameter(uv.uv_read_start, 2) = undefined;
+        var reading_now = false;
         var close_handle: Parameter(uv.uv_close, 0) = undefined;
         var close_callback: Parameter(uv.uv_close, 1) = undefined;
         var queued_writes: usize = 0;
@@ -50,6 +54,7 @@ pub fn Model(comptime uv: type) type {
             queued_bytes = 0;
             completed_writes = 0;
             accepted_bytes = 0;
+            reading_now = false;
             closes = 0;
             shutdowns = 0;
         }
@@ -72,6 +77,30 @@ pub fn Model(comptime uv: type) type {
             queued_writes -= 1;
             queued_bytes -= oldest.bytes;
             oldest.callback(oldest.request, status);
+        }
+
+        /// `UV_EOF`, the value `deliverRead` takes for the peer closing its side.
+        pub const eof: isize = -4095;
+
+        pub fn reading() bool {
+            return reading_now;
+        }
+
+        pub fn shutdownRequests() usize {
+            return shutdowns;
+        }
+
+        /// One readable event, as the loop would deliver it: libuv asks the code for a buffer,
+        /// then reports `nread` arbitrary bytes in it, or a negative status such as `eof`.
+        pub fn deliverRead(nread: isize) void {
+            verifier.assert(reading_now and closes == 0);
+            var buffer: uv.Buf = undefined;
+            alloc_callback(@ptrCast(read_stream), 65536, &buffer);
+            if (nread > 0) {
+                verifier.assert(nread <= buffer.len);
+                verifier.fill(buffer.base[0..@intCast(nread)]);
+            }
+            read_callback(read_stream, nread, &buffer);
         }
 
         /// Runs the close callback. libuv does so only after every request has completed.
@@ -190,8 +219,22 @@ pub fn Model(comptime uv: type) type {
             return @intFromBool(closes != 0);
         }
 
+        fn readStart(
+            stream: Parameter(uv.uv_read_start, 0),
+            alloc: Parameter(uv.uv_read_start, 1),
+            read: Parameter(uv.uv_read_start, 2),
+        ) callconv(.c) c_int {
+            verifier.assert(closes == 0);
+            read_stream = stream;
+            alloc_callback = alloc;
+            read_callback = read;
+            reading_now = true;
+            return 0;
+        }
+
         fn readStop(stream: Parameter(uv.uv_read_stop, 0)) callconv(.c) c_int {
             _ = stream;
+            reading_now = false;
             return 0;
         }
 
@@ -244,6 +287,7 @@ pub fn Model(comptime uv: type) type {
             @export(&shutdown, .{ .name = "uv_shutdown" });
             @export(&close, .{ .name = "uv_close" });
             @export(&isClosing, .{ .name = "uv_is_closing" });
+            @export(&readStart, .{ .name = "uv_read_start" });
             @export(&readStop, .{ .name = "uv_read_stop" });
             @export(&reqSize, .{ .name = "uv_req_size" });
             @export(&handleSize, .{ .name = "uv_handle_size" });

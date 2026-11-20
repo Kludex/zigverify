@@ -144,7 +144,8 @@ const cpython = @import("cpython").Model(zuvloop.py.c, 16);
 
 `models/libuv_stream.zig` is instantiated the same way, with the code's own declarations of
 libuv, and takes each parameter type from them. Its callbacks run when the harness calls
-`completeWrite` or `deliverClose`: the harness plays the loop, and decides the order.
+`completeWrite`, `deliverRead` or `deliverClose`: the harness plays the loop, and decides
+the order.
 
 A call into Python runs no code by default. Set `cpython.on_call` to a function and every
 modelled call runs it first, which is how a harness has a protocol callback reenter the
@@ -171,13 +172,18 @@ The `integration` directory uses the models on a real extension, zuvloop. Run it
 | A completed write releases the buffers pinned for it | 16s |
 | `close()` sends what is outstanding, then closes the handle exactly once | 35s |
 | A failed write closes exactly once and releases every buffer | 35s |
+| `abort()` drops what is pending and closes exactly once | 35s |
+| `write_eof()` half-closes only after the data, once, and later writes are refused | 30s |
+| `writelines()` batches every buffer | 14s |
+| `set_write_buffer_limits()` defaults to 64 KiB and 16 KiB | 15s |
+| A read reaches the protocol in one call, and EOF closes exactly once | 37s |
 | ... and still kept when `pause_writing` calls `close()` | refuted in 15s |
 
 The last one is a real bug. The fifth `write()` flushes a full batch, the flush pauses the
 protocol, and if the protocol closes the transport from `pause_writing`, the byte of that
 fifth write is released without being sent, although `write()` reported success.
 
-Pass `-j1` to run them one at a time, which takes about 15 minutes: together they need
+Pass `-j1` to run them one at a time, which takes about 20 minutes: together they need
 more memory than most machines have.
 
 Each flush proof fixes what the socket answers. One proof over every answer at once does
@@ -185,7 +191,8 @@ not fit in memory, and neither does one over every Python object: split a proof 
 when the cases take different paths through the code.
 
 The proofs are bounded by the models: text and bytes of up to 16 bytes, tuples of up to
-four items, and a handful of one- and two-byte writes. Reads are not modelled.
+four items, and a handful of one- and two-byte writes. The scenario proofs follow one
+path each: a healthy interpreter and a libuv that accepts every request.
 
 An `assert()` in a translated C header is checked too. A failing one is reported as
 `assert() failed in C code`, with its line.

@@ -226,3 +226,85 @@ export fn failed_write_closes_once_and_releases_everything() void {
     stream.deliverClose();
     verifier.assert(loop_state.closing_handles == 0);
 }
+
+/// `abort()` drops what was still pending and closes the handle at once, exactly once. The
+/// queued write that libuv then cancels releases its buffers without closing again.
+export fn abort_discards_pending_and_closes_once() void {
+    const transport = openTransport();
+    writeFiveBytes(transport);
+    verifier.assert(cpython.method("abort").?(@ptrCast(transport), null) != null);
+    verifier.assert(stream.handleCloses() == 1);
+    verifier.assert(transport.pending_count == 0);
+    verifier.assert(cpython.releasedBuffers() == 1);
+    stream.completeWrite(ecanceled);
+    verifier.assert(stream.handleCloses() == 1);
+    verifier.assert(cpython.releasedBuffers() == 5);
+    stream.deliverClose();
+}
+
+/// `write_eof()` half-closes only after everything written before it has gone out, does so
+/// exactly once, and a `write()` after it is refused with an error.
+export fn write_eof_shuts_down_after_the_data() void {
+    const transport = openTransport();
+    writeFiveBytes(transport);
+    verifier.assert(cpython.method("write_eof").?(@ptrCast(transport), null) != null);
+    verifier.assert(stream.acceptedBytes() == 5);
+    verifier.assert(stream.shutdownRequests() == 0);
+    stream.completeWrite(0);
+    verifier.assert(stream.shutdownRequests() == 0);
+    stream.completeWrite(0);
+    verifier.assert(stream.shutdownRequests() == 1);
+    verifier.assert(cpython.method("write").?(@ptrCast(transport), cpython.anyBytes(1)) == null);
+    verifier.assert(cpython.errorIsSet());
+    verifier.assert(stream.handleCloses() == 0);
+}
+
+/// `writelines()` of two buffers batches both, and releases the references it took on the way.
+export fn writelines_batches_every_buffer() void {
+    const transport = openTransport();
+    const lines = cpython.tupleOf(&.{ cpython.anyBytes(1), cpython.anyBytes(1) });
+    verifier.assert(cpython.method("writelines").?(@ptrCast(transport), lines) != null);
+    verifier.assert(transport.pending_count == 2);
+    verifier.assert(transport.pending_size == 2);
+    verifier.assert(cpython.releasedBuffers() == 0);
+}
+
+/// `set_write_buffer_limits()` with no arguments sets the documented defaults.
+export fn write_buffer_limits_default_to_64k_and_16k() void {
+    const transport = openTransport();
+    const Fastcall = *const fn (
+        ?*zuvloop.py.c.PyObject,
+        [*c]?*zuvloop.py.c.PyObject,
+        zuvloop.py.c.Py_ssize_t,
+        ?*zuvloop.py.c.PyObject,
+    ) callconv(.c) ?*zuvloop.py.c.PyObject;
+    const set_limits: Fastcall = @ptrCast(cpython.method("set_write_buffer_limits").?);
+    // The interpreter passes a valid array even for no arguments.
+    var no_arguments: [1]?*zuvloop.py.c.PyObject = .{null};
+    verifier.assert(set_limits(@ptrCast(transport), &no_arguments, 0, null) != null);
+    verifier.assert(transport.high_water == 64 * 1024);
+    verifier.assert(transport.low_water == 16 * 1024);
+}
+
+/// A readable event hands the protocol its data with one call, and the peer closing its
+/// side, when the protocol does not ask to keep the connection, closes the handle once.
+export fn read_delivers_data_and_eof_closes_once() void {
+    const transport = openTransport();
+    transport.cb_data_received = @ptrCast(cpython.anyValue());
+    transport.cb_eof_received = @ptrCast(cpython.anyValue());
+    // The smallest read size the transport uses.
+    transport.read_size = 16 * 1024;
+    verifier.assert(cpython.method("_start_reading").?(@ptrCast(transport), null) != null);
+    verifier.assert(stream.reading());
+
+    const before = cpython.calls();
+    stream.deliverRead(3);
+    verifier.assert(cpython.calls() == before + 1);
+    verifier.assert(stream.handleCloses() == 0);
+
+    stream.deliverRead(stream.eof);
+    verifier.assert(cpython.calls() == before + 2);
+    verifier.assert(!stream.reading());
+    verifier.assert(stream.handleCloses() == 1);
+    stream.deliverClose();
+}

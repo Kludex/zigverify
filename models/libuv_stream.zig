@@ -27,6 +27,12 @@ pub fn Model(comptime uv: type) type {
         pub var failures = true;
         /// Whether adopting a descriptor fails, as it does for one that is not a socket.
         pub var open_fails = false;
+        /// Whether starting to read fails, as it does on a descriptor that cannot be read.
+        pub var read_start_fails = false;
+        /// Whether a half-close is refused, as it is on a socket that is no longer connected.
+        pub var shutdown_fails = false;
+        /// Whether libuv cannot set up the handle at all.
+        pub var init_fails = false;
         /// Whether libuv refuses every write request, as it does on a broken connection.
         pub var refuses_writes = false;
 
@@ -45,7 +51,7 @@ pub fn Model(comptime uv: type) type {
         var read_callback: Parameter(uv.uv_read_start, 2) = undefined;
         var reading_now = false;
         var close_handle: Parameter(uv.uv_close, 0) = undefined;
-        var close_callback: Parameter(uv.uv_close, 1) = undefined;
+        var close_callback: Parameter(uv.uv_close, 1) = null;
         var queued_writes: usize = 0;
         var queued_bytes: usize = 0;
         var closes: usize = 0;
@@ -56,6 +62,10 @@ pub fn Model(comptime uv: type) type {
             socket = .anything;
             failures = true;
             refuses_writes = false;
+            read_start_fails = false;
+            shutdown_fails = false;
+            init_fails = false;
+            close_callback = null;
             open_fails = false;
             queued_writes = 0;
             queued_bytes = 0;
@@ -209,7 +219,7 @@ pub fn Model(comptime uv: type) type {
             _ = request;
             _ = stream;
             _ = callback;
-            if (closes != 0 or shutdowns != 0 or (failures and verifier.any(bool))) return epipe;
+            if (shutdown_fails or closes != 0 or shutdowns != 0 or (failures and verifier.any(bool))) return epipe;
             shutdowns += 1;
             return 0;
         }
@@ -234,6 +244,7 @@ pub fn Model(comptime uv: type) type {
             read: Parameter(uv.uv_read_start, 2),
         ) callconv(.c) c_int {
             verifier.assert(closes == 0);
+            if (read_start_fails) return einval;
             read_stream = stream;
             alloc_callback = alloc;
             read_callback = read;
@@ -260,6 +271,7 @@ pub fn Model(comptime uv: type) type {
             _ = loop;
             _ = handle;
             _ = flags;
+            if (init_fails) return einval;
             return if (failures and verifier.any(bool)) einval else 0;
         }
 

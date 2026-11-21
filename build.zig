@@ -210,11 +210,14 @@ pub fn build(b: *std.Build) void {
                 .{ .function = "large_read_reaches_the_protocol", .unwind = 40 },
                 .{ .function = "refused_write_request_closes_once_and_releases_everything", .unwind = 40 },
                 .{ .function = "make_transport_cleans_up_when_the_descriptor_is_refused", .unwind = 40, .bounds = ready_queue_bounds },
+                .{ .function = "make_transport_raises_when_the_handle_cannot_be_set_up", .unwind = 40, .bounds = ready_queue_bounds },
+                .{ .function = "refused_read_start_closes_once", .unwind = 40 },
+                .{ .function = "refused_shutdown_leaves_the_transport_open", .unwind = 40 },
                 // A bug in zuvloop at the time of writing. Drop `.expect` once it is fixed there.
                 .{ .function = "fifth_write_is_kept_when_pause_writing_closes", .unwind = 40, .expect = .refuted },
             },
         });
-        // For each scenario, one proof per call that can fail, alone and with a later failure.
+        // For each scenario, one proof per call that can fail, alone and with any later failures.
         var failure_proofs: std.ArrayList(Proof) = .empty;
         for ([_][]const u8{
             "write_pins_nothing",
@@ -226,7 +229,7 @@ pub fn build(b: *std.Build) void {
             "buffered_read_releases_views",
         }) |scenario| {
             for (0..4) |failing| {
-                for ([_][]const u8{ "_fails", "_and_a_later_one_fail" }) |ending| {
+                for ([_][]const u8{ "_fails", "_and_any_later_ones_fail" }) |ending| {
                     failure_proofs.append(b.allocator, .{
                         .function = b.fmt("{s}_when_call_{d}{s}", .{ scenario, failing, ending }),
                         .unwind = 40,

@@ -51,10 +51,11 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         /// per index walks every single-failure path, each as cheap as the path where nothing
         /// fails, where letting all of them fail at once is not affordable.
         pub var fail_at: ?usize = null;
-        /// With `fail_at` set, lets at most one later call fail as well, whichever it is. One
-        /// proof per first failure then covers every pair of failures.
-        pub var second_failure = false;
-        var second_failure_used = false;
+        /// With `fail_at` set, how many later calls may fail as well, whichever they are. With
+        /// one, a proof per first failure covers every pair of failures; with no limit, it
+        /// covers every combination of failures that starts at that call.
+        pub var later_failures: usize = 0;
+        var later_failures_used: usize = 0;
         var fallible_calls: usize = 0;
         /// Runs inside every modelled call into Python, standing in for the Python code that
         /// call would run. This is how a harness has a protocol callback reenter the code.
@@ -98,8 +99,8 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             spec = null;
             failures = true;
             fail_at = null;
-            second_failure = false;
-            second_failure_used = false;
+            later_failures = 0;
+            later_failures_used = 0;
             fallible_calls = 0;
             on_call = null;
             used = 0;
@@ -250,8 +251,8 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             defer fallible_calls += 1;
             if (fail_at) |index| {
                 if (fallible_calls == index) return true;
-                if (second_failure and fallible_calls > index and !second_failure_used and verifier.any(bool)) {
-                    second_failure_used = true;
+                if (fallible_calls > index and later_failures_used < later_failures and verifier.any(bool)) {
+                    later_failures_used += 1;
                     return true;
                 }
                 return false;

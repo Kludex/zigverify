@@ -169,9 +169,10 @@ fn eofWhenCallFails(comptime failing: usize) void {
 }
 ```
 
-Set `cpython.second_failure` as well and at most one later call may fail too, whichever
-it is. The same number of proofs then covers every pair of failures, at about the same
-cost, because the second failure is left open only on the short path after the first.
+Set `cpython.later_failures` as well and that many later calls may fail too, whichever
+they are. With no limit, the same number of proofs covers every combination of failures,
+at about the same cost, because the later failures are left open only on the short path
+that follows the first.
 
 The `integration` directory uses the models on a real extension, zuvloop. Run it with
 `zig build verify-zuvloop -Dzuvloop=<checkout> -Dpython-include=<dir>`.
@@ -208,7 +209,10 @@ The `integration` directory uses the models on a real extension, zuvloop. Run it
 | `write_eof()` with any one call failing: every buffer is released, at most one close | 4 x 34s |
 | `writelines()` with any one call failing: it batches both or releases every view it took | 4 x 25s |
 | A buffered read with any one call failing: every view is released, at most one close | 4 x 40s |
-| Each of the seven scenarios above with any two calls failing | 28 x 30-70s |
+| Each of the seven scenarios above with any number of calls failing | 28 x 30-100s |
+| Creating a transport when libuv cannot set up the handle raises and queues nothing | 16 min |
+| A refused read start closes the transport exactly once | 24s |
+| A refused half-close leaves the transport open and holding no request | 26s |
 | `close()` with any one call failing: still drains, closes exactly once, releases every buffer | 4 x 60s |
 | ... and still kept when `pause_writing` calls `close()` | refuted in 15s |
 
@@ -216,7 +220,7 @@ The last one is a real bug. The fifth `write()` flushes a full batch, the flush 
 protocol, and if the protocol closes the transport from `pause_writing`, the byte of that
 fifth write is released without being sent, although `write()` reported success.
 
-Pass `-j1` to run them one at a time, which takes about two and a quarter hours: run together they
+Pass `-j1` to run them one at a time, which takes about two and a half hours: run together they
 need more memory than most machines have.
 
 Each flush proof fixes what the socket answers. One proof over every answer at once does
@@ -227,7 +231,7 @@ The proofs are bounded by the models: text and bytes of up to 16 bytes, tuples o
 four items, writes of up to sixteen bytes, and reads of up to a thousand. The scenario
 proofs cover the path where nothing fails and, for `write()`, `writelines()`, `write_eof()`,
 `close()`, `abort()`, EOF and buffered reads, each path where one call fails and each
-where two do. The proof with the highest index asserts that it failed nothing, which is
+where any number do. The proof with the highest index asserts that it failed nothing, which is
 what shows the indices below it reached every call. When creating a transport fails, the
 proof stops before the close callback runs: on that path the checker cannot tell which
 function libuv was handed, tries every function of that shape, and does not finish.

@@ -213,7 +213,7 @@ pub fn build(b: *std.Build) void {
                 .{ .function = "fifth_write_is_kept_when_pause_writing_closes", .unwind = 40, .expect = .refuted },
             },
         });
-        // One proof per call that can fail, for each scenario: the transport's count of them.
+        // For each scenario, one proof per call that can fail, alone and with a later failure.
         var failure_proofs: std.ArrayList(Proof) = .empty;
         for ([_][]const u8{
             "write_pins_nothing",
@@ -225,10 +225,12 @@ pub fn build(b: *std.Build) void {
             "buffered_read_releases_views",
         }) |scenario| {
             for (0..4) |failing| {
-                failure_proofs.append(b.allocator, .{
-                    .function = b.fmt("{s}_when_call_{d}_fails", .{ scenario, failing }),
-                    .unwind = 40,
-                }) catch @panic("OOM");
+                for ([_][]const u8{ "_fails", "_and_a_later_one_fail" }) |ending| {
+                    failure_proofs.append(b.allocator, .{
+                        .function = b.fmt("{s}_when_call_{d}{s}", .{ scenario, failing, ending }),
+                        .unwind = 40,
+                    }) catch @panic("OOM");
+                }
             }
         }
         prover.add(zuvloop_step, .{

@@ -51,6 +51,10 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         /// per index walks every single-failure path, each as cheap as the path where nothing
         /// fails, where letting all of them fail at once is not affordable.
         pub var fail_at: ?usize = null;
+        /// With `fail_at` set, lets at most one later call fail as well, whichever it is. One
+        /// proof per first failure then covers every pair of failures.
+        pub var second_failure = false;
+        var second_failure_used = false;
         var fallible_calls: usize = 0;
         /// Runs inside every modelled call into Python, standing in for the Python code that
         /// call would run. This is how a harness has a protocol callback reenter the code.
@@ -94,6 +98,8 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             spec = null;
             failures = true;
             fail_at = null;
+            second_failure = false;
+            second_failure_used = false;
             fallible_calls = 0;
             on_call = null;
             used = 0;
@@ -242,7 +248,14 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         /// Whether the call being modelled, one that can fail, does.
         fn fails() bool {
             defer fallible_calls += 1;
-            if (fail_at) |index| return fallible_calls == index;
+            if (fail_at) |index| {
+                if (fallible_calls == index) return true;
+                if (second_failure and fallible_calls > index and !second_failure_used and verifier.any(bool)) {
+                    second_failure_used = true;
+                    return true;
+                }
+                return false;
+            }
             return failures and verifier.any(bool);
         }
 

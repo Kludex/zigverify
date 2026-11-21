@@ -529,12 +529,14 @@ fn bufferedReadWhenCallFails(comptime failing: usize) void {
     assertEveryFailurePointCovered(failing, before);
 }
 
-/// `close()` with data outstanding, where the first call that can fail does. The data is
-/// still sent, the handle is still closed exactly once, and every buffer is still released.
-export fn close_drains_and_closes_once_when_its_first_call_fails() void {
+/// `close()` with data outstanding, where the call with index `failing` fails on the way to
+/// reporting the lost connection. The data is still sent, the handle is still closed exactly
+/// once, and every buffer is still released.
+fn closeWhenCallFails(comptime failing: usize) void {
     const transport = openTransport();
     writeFiveBytes(transport);
-    cpython.fail_at = cpython.fallibleCalls();
+    const before = cpython.fallibleCalls();
+    cpython.fail_at = before + failing;
     closeFromCallback();
     stream.completeWrite(0);
     stream.completeWrite(0);
@@ -543,6 +545,7 @@ export fn close_drains_and_closes_once_when_its_first_call_fails() void {
     verifier.assert(cpython.releasedBuffers() == 5);
     stream.deliverClose();
     verifier.assert(loop_state.closing_handles == 0);
+    assertEveryFailurePointCovered(failing, before);
 }
 
 comptime {
@@ -554,6 +557,10 @@ comptime {
 
             fn eof() callconv(.c) void {
                 eofWhenCallFails(failing);
+            }
+
+            fn close() callconv(.c) void {
+                closeWhenCallFails(failing);
             }
 
             fn abort() callconv(.c) void {
@@ -575,6 +582,7 @@ comptime {
         const suffix = std.fmt.comptimePrint("_when_call_{d}_fails", .{failing});
         @export(&Proofs.write, .{ .name = "write_pins_nothing" ++ suffix });
         @export(&Proofs.eof, .{ .name = "eof_closes_at_most_once" ++ suffix });
+        @export(&Proofs.close, .{ .name = "close_drains_and_closes_once" ++ suffix });
         @export(&Proofs.abort, .{ .name = "abort_closes_once" ++ suffix });
         @export(&Proofs.writeEof, .{ .name = "write_eof_releases_buffers" ++ suffix });
         @export(&Proofs.writelines, .{ .name = "writelines_pins_nothing" ++ suffix });

@@ -206,7 +206,6 @@ pub fn build(b: *std.Build) void {
                 // The loop's ready queue grows by doubling. Under the proof's own bound the checker
                 // would unroll that forty times over a size it cannot fix; these loops run once.
                 .{ .function = "make_transport_opens_and_schedules_the_connection", .unwind = 40, .bounds = ready_queue_bounds },
-                .{ .function = "close_drains_and_closes_once_when_its_first_call_fails", .unwind = 40 },
                 .{ .function = "sixteen_byte_writes_are_all_kept", .unwind = 40 },
                 .{ .function = "large_read_reaches_the_protocol", .unwind = 40 },
                 .{ .function = "refused_write_request_closes_once_and_releases_everything", .unwind = 40 },
@@ -219,6 +218,7 @@ pub fn build(b: *std.Build) void {
         for ([_][]const u8{
             "write_pins_nothing",
             "eof_closes_at_most_once",
+            "close_drains_and_closes_once",
             "abort_closes_once",
             "write_eof_releases_buffers",
             "writelines_pins_nothing",

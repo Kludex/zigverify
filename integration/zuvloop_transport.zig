@@ -341,3 +341,43 @@ export fn buffered_read_fills_the_protocols_buffer() void {
     verifier.assert(cpython.releasedBuffers() == 1);
     verifier.assert(stream.handleCloses() == 0);
 }
+
+/// libc's `getsockopt`, which the transport uses to ask whether a descriptor is a socket.
+/// It may say either, and on success fills the option's value.
+export fn getsockopt(fd: c_int, level: i32, name: u32, noalias value: ?*anyopaque, noalias len: *std.c.socklen_t) c_int {
+    _ = fd;
+    _ = level;
+    _ = name;
+    if (verifier.any(bool)) return -1;
+    const bytes: [*]u8 = @ptrCast(value.?);
+    verifier.fill(bytes[0..len.*]);
+    return 0;
+}
+
+fn makeTcpTransport() zuvloop.py.Error!*zuvloop.py.Object {
+    const none = zuvloop.py.none();
+    const arguments = [_]?*zuvloop.py.Object{
+        @ptrCast(cpython.intOf(7)),
+        @ptrCast(cpython.intOf(zuvloop.transport.KIND_TCP)),
+        @ptrCast(cpython.anyValue()),
+        none,
+        none,
+        none,
+    };
+    return zuvloop.transport.makeTransport(@ptrCast(&loop_instance), &arguments);
+}
+
+/// Creating a transport for a TCP descriptor opens it, counts its handle, and queues the
+/// two calls a new connection needs: `connection_made`, then the start of reading.
+export fn make_transport_opens_and_schedules_the_connection() void {
+    _ = openTransport();
+    const made = makeTcpTransport() catch unreachable;
+    const transport: *zuvloop.transport.Transport = @ptrCast(@alignCast(made));
+    verifier.assert(transport.flags & open != 0);
+    verifier.assert(transport.state == &loop_state);
+    verifier.assert(transport.high_water == 64 * 1024);
+    verifier.assert(loop_state.external_handles == 2);
+    verifier.assert(loop_state.ready.len == 2);
+    verifier.assert(loop_state.transport_head == transport);
+    verifier.assert(stream.handleCloses() == 0);
+}

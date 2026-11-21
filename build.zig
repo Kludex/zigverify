@@ -179,6 +179,10 @@ pub fn build(b: *std.Build) void {
             .{ .name = "cpython", .module = cpython },
             .{ .name = "libuv", .module = libuv },
         };
+        const ready_queue_bounds: []const Bound = &.{
+            .{ .function = "zig_collections_Ready_ensureUnusedCapacity", .unwind = 2 },
+            .{ .function = "zig_collections_Ready_grow", .unwind = 2 },
+        };
         const zuvloop_step = b.step("verify-zuvloop", "Prove properties of zuvloop against the CPython and libuv models");
         prover.add(zuvloop_step, .{
             .root_source_file = b.path("integration/zuvloop_transport.zig"),
@@ -199,6 +203,9 @@ pub fn build(b: *std.Build) void {
                 .{ .function = "read_delivers_data_and_eof_closes_once", .unwind = 40 },
                 .{ .function = "pause_and_resume_reading_stop_and_restart_reads", .unwind = 40 },
                 .{ .function = "buffered_read_fills_the_protocols_buffer", .unwind = 40 },
+                // The loop's ready queue grows by doubling. Under the proof's own bound the checker
+                // would unroll that forty times over a size it cannot fix; these loops run once.
+                .{ .function = "make_transport_opens_and_schedules_the_connection", .unwind = 40, .bounds = ready_queue_bounds },
                 // A bug in zuvloop at the time of writing. Drop `.expect` once it is fixed there.
                 .{ .function = "fifth_write_is_kept_when_pause_writing_closes", .unwind = 40, .expect = .refuted },
             },

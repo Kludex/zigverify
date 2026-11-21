@@ -51,6 +51,8 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         /// What every modelled call into Python returns, as a new reference. Null means a fresh
         /// opaque object.
         pub var call_result: ?*c.PyObject = null;
+        /// What `isinstance` answers when `failures` is off.
+        pub var is_instance = false;
         /// What every attribute lookup returns: an immortal object laid out as a type, whose
         /// fields the harness may set to what the code under test expects of the attribute.
         pub var attribute: c.PyTypeObject = undefined;
@@ -92,6 +94,7 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             calls_made = 0;
             instances_used = 0;
             call_result = null;
+            is_instance = false;
             // The constants take the first three slots, so `Py_GetConstantBorrowed` can index them.
             _ = create(.none, false);
             _ = create(.false, false);
@@ -148,6 +151,13 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         /// How many times the code has called into Python: callbacks, methods, any callable.
         pub fn calls() usize {
             return calls_made;
+        }
+
+        /// An integer object holding `value`.
+        pub fn intOf(value: isize) *c.PyObject {
+            const object = create(.int, false);
+            object.int = value;
+            return @ptrCast(object);
         }
 
         /// A tuple of exactly these items.
@@ -251,6 +261,32 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             _ = name;
             if (status() != 0) return null;
             return @ptrCast(&attribute);
+        }
+
+        fn getAttr(object: ?*c.PyObject, name: ?*c.PyObject) callconv(.c) ?*c.PyObject {
+            _ = object;
+            _ = name;
+            if (status() != 0) return null;
+            return @ptrCast(&attribute);
+        }
+
+        fn isInstance(object: ?*c.PyObject, class: ?*c.PyObject) callconv(.c) c_int {
+            _ = object;
+            _ = class;
+            if (!failures) return @intFromBool(is_instance);
+            const answer = verifier.any(c_int);
+            verifier.assume(answer >= -1 and answer <= 1);
+            if (answer < 0) error_set = true;
+            return answer;
+        }
+
+        fn longAsLong(object: ?*c.PyObject) callconv(.c) c_long {
+            const number = cast(object);
+            if (number.kind != .int or status() != 0) {
+                error_set = true;
+                return -1;
+            }
+            return number.int;
         }
 
         fn longFromLongLong(value: c_longlong) callconv(.c) ?*c.PyObject {
@@ -608,6 +644,9 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
 
         comptime {
             @export(&longFromLongLong, .{ .name = "PyLong_FromLongLong" });
+            @export(&getAttr, .{ .name = "PyObject_GetAttr" });
+            @export(&isInstance, .{ .name = "PyObject_IsInstance" });
+            @export(&longAsLong, .{ .name = "PyLong_AsLong" });
             @export(&objectIsTrue, .{ .name = "PyObject_IsTrue" });
             @export(&sequenceFast, .{ .name = "PySequence_Fast" });
             @export(&sequenceGetItem, .{ .name = "PySequence_GetItem" });

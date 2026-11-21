@@ -15,6 +15,7 @@ pub fn Model(comptime uv: type) type {
         /// `UV_EAGAIN` and `UV_EPIPE` on every platform but Windows.
         const eagain: c_int = -11;
         const epipe: c_int = -32;
+        const einval: c_int = -22;
 
         /// What the socket does with an immediate write. Narrowing it splits one proof about
         /// every outcome into a cheaper proof per outcome.
@@ -243,6 +244,46 @@ pub fn Model(comptime uv: type) type {
             return 192;
         }
 
+        fn tcpInitEx(
+            loop: Parameter(uv.uv_tcp_init_ex, 0),
+            handle: Parameter(uv.uv_tcp_init_ex, 1),
+            flags: c_uint,
+        ) callconv(.c) c_int {
+            _ = loop;
+            _ = handle;
+            _ = flags;
+            return if (failures and verifier.any(bool)) einval else 0;
+        }
+
+        fn tcpOpen(handle: Parameter(uv.uv_tcp_open, 0), socket_fd: Parameter(uv.uv_tcp_open, 1)) callconv(.c) c_int {
+            _ = handle;
+            _ = socket_fd;
+            return if (failures and verifier.any(bool)) einval else 0;
+        }
+
+        fn pipeInit(
+            loop: Parameter(uv.uv_pipe_init, 0),
+            handle: Parameter(uv.uv_pipe_init, 1),
+            ipc: c_int,
+        ) callconv(.c) c_int {
+            _ = loop;
+            _ = handle;
+            _ = ipc;
+            return if (failures and verifier.any(bool)) einval else 0;
+        }
+
+        fn pipeOpen(handle: Parameter(uv.uv_pipe_open, 0), file: Parameter(uv.uv_pipe_open, 1)) callconv(.c) c_int {
+            _ = handle;
+            _ = file;
+            return if (failures and verifier.any(bool)) einval else 0;
+        }
+
+        fn tcpNodelay(handle: Parameter(uv.uv_tcp_nodelay, 0), enable: c_int) callconv(.c) c_int {
+            _ = handle;
+            _ = enable;
+            return 0;
+        }
+
         fn handleSize(kind: Parameter(uv.uv_handle_size, 0)) callconv(.c) usize {
             _ = kind;
             return 256;
@@ -290,6 +331,11 @@ pub fn Model(comptime uv: type) type {
             @export(&readStart, .{ .name = "uv_read_start" });
             @export(&readStop, .{ .name = "uv_read_stop" });
             @export(&reqSize, .{ .name = "uv_req_size" });
+            @export(&tcpInitEx, .{ .name = "uv_tcp_init_ex" });
+            @export(&tcpOpen, .{ .name = "uv_tcp_open" });
+            @export(&tcpNodelay, .{ .name = "uv_tcp_nodelay" });
+            @export(&pipeInit, .{ .name = "uv_pipe_init" });
+            @export(&pipeOpen, .{ .name = "uv_pipe_open" });
             @export(&handleSize, .{ .name = "uv_handle_size" });
             @export(&prepareStart, .{ .name = "uv_prepare_start" });
             @export(&unref, .{ .name = "uv_unref" });

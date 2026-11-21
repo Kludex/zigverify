@@ -179,13 +179,14 @@ The `integration` directory uses the models on a real extension, zuvloop. Run it
 | A read reaches the protocol in one call, and EOF closes exactly once | 37s |
 | `pause_reading()` stops reads and `resume_reading()` restarts them | 22s |
 | A buffered protocol's buffer is filled, reported and released once | 19s |
+| Creating a TCP transport opens it and queues `connection_made` and the start of reading | 7.6 min |
 | ... and still kept when `pause_writing` calls `close()` | refuted in 15s |
 
 The last one is a real bug. The fifth `write()` flushes a full batch, the flush pauses the
 protocol, and if the protocol closes the transport from `pause_writing`, the byte of that
 fifth write is released without being sent, although `write()` reported success.
 
-Pass `-j1` to run them one at a time, which takes about 20 minutes: together they need
+Pass `-j1` to run them one at a time, which takes about 30 minutes: together they need
 more memory than most machines have.
 
 Each flush proof fixes what the socket answers. One proof over every answer at once does
@@ -194,8 +195,7 @@ when the cases take different paths through the code.
 
 The proofs are bounded by the models: text and bytes of up to 16 bytes, tuples of up to
 four items, and a handful of one- and two-byte writes. The scenario proofs follow one
-path each: a healthy interpreter and a libuv that accepts every request. Creating a
-transport is not covered: that proof ran out of memory.
+path each: a healthy interpreter and a libuv that accepts every request.
 
 An `assert()` in a translated C header is checked too. A failing one is reported as
 `assert() failed in C code`, with its line.

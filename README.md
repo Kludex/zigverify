@@ -198,6 +198,7 @@ The `integration` directory uses the models on a real extension, zuvloop. Run it
 | `pause_reading()` stops reads and `resume_reading()` restarts them | 22s |
 | A buffered protocol's buffer is filled, reported and released once | 19s |
 | Creating a TCP transport opens it and queues `connection_made` and the start of reading | 7.6 min |
+| Creating a transport on a refused descriptor raises, queues nothing, and closes once | 13 min |
 | Five sixteen-byte writes are all kept | 25s |
 | A thousand-byte read reaches the protocol in one call | 29s |
 | A refused write request closes exactly once and releases every buffer | 27s |
@@ -215,7 +216,7 @@ The last one is a real bug. The fifth `write()` flushes a full batch, the flush 
 protocol, and if the protocol closes the transport from `pause_writing`, the byte of that
 fifth write is released without being sent, although `write()` reported success.
 
-Pass `-j1` to run them one at a time, which takes about two hours: run together they
+Pass `-j1` to run them one at a time, which takes about two and a quarter hours: run together they
 need more memory than most machines have.
 
 Each flush proof fixes what the socket answers. One proof over every answer at once does
@@ -227,8 +228,9 @@ four items, writes of up to sixteen bytes, and reads of up to a thousand. The sc
 proofs cover the path where nothing fails and, for `write()`, `writelines()`, `write_eof()`,
 `close()`, `abort()`, EOF and buffered reads, each path where one call fails and each
 where two do. The proof with the highest index asserts that it failed nothing, which is
-what shows the indices below it reached every call. Creating a transport is proved only
-when it succeeds: the proof of it failing gave no verdict in 40 minutes.
+what shows the indices below it reached every call. When creating a transport fails, the
+proof stops before the close callback runs: on that path the checker cannot tell which
+function libuv was handed, tries every function of that shape, and does not finish.
 
 An `assert()` in a translated C header is checked too. A failing one is reported as
 `assert() failed in C code`, with its line.

@@ -632,6 +632,15 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             return object;
         }
 
+        /// Bookkeeping CPython does when an object dies, none of which the model tracks.
+        fn ignoreObject(object: ?*c.PyObject) callconv(.c) void {
+            _ = object;
+        }
+
+        fn gcUnTrack(object: ?*anyopaque) callconv(.c) void {
+            _ = object;
+        }
+
         fn errClear() callconv(.c) void {
             error_set = false;
         }
@@ -714,6 +723,9 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             @export(&objectSize, .{ .name = "PyObject_Size" });
             @export(&objectGetItemData, .{ .name = "PyObject_GetItemData" });
             @export(&typeGenericAlloc, .{ .name = "PyType_GenericAlloc" });
+            @export(&gcUnTrack, .{ .name = "PyObject_GC_UnTrack" });
+            @export(&ignoreObject, .{ .name = "PyObject_ClearWeakRefs" });
+            @export(&ignoreObject, .{ .name = "PyObject_ClearManagedDict" });
             @export(&errClear, .{ .name = "PyErr_Clear" });
             @export(&errExceptionMatches, .{ .name = "PyErr_ExceptionMatches" });
             @export(&errGetRaisedException, .{ .name = "PyErr_GetRaisedException" });

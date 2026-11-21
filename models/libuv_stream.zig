@@ -25,6 +25,8 @@ pub fn Model(comptime uv: type) type {
         /// Whether a queued write, a shutdown or the queue size may come out more than one way.
         /// Turning it off accepts every request and reports the queue exactly.
         pub var failures = true;
+        /// Whether adopting a descriptor fails, as it does for one that is not a socket.
+        pub var open_fails = false;
         /// Whether libuv refuses every write request, as it does on a broken connection.
         pub var refuses_writes = false;
 
@@ -54,6 +56,7 @@ pub fn Model(comptime uv: type) type {
             socket = .anything;
             failures = true;
             refuses_writes = false;
+            open_fails = false;
             queued_writes = 0;
             queued_bytes = 0;
             completed_writes = 0;
@@ -263,6 +266,7 @@ pub fn Model(comptime uv: type) type {
         fn tcpOpen(handle: Parameter(uv.uv_tcp_open, 0), socket_fd: Parameter(uv.uv_tcp_open, 1)) callconv(.c) c_int {
             _ = handle;
             _ = socket_fd;
+            if (open_fails) return einval;
             return if (failures and verifier.any(bool)) einval else 0;
         }
 

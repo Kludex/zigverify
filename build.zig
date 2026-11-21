@@ -209,6 +209,7 @@ pub fn build(b: *std.Build) void {
                 .{ .function = "sixteen_byte_writes_are_all_kept", .unwind = 40 },
                 .{ .function = "large_read_reaches_the_protocol", .unwind = 40 },
                 .{ .function = "refused_write_request_closes_once_and_releases_everything", .unwind = 40 },
+                .{ .function = "make_transport_cleans_up_when_the_descriptor_is_refused", .unwind = 40, .bounds = ready_queue_bounds },
                 // A bug in zuvloop at the time of writing. Drop `.expect` once it is fixed there.
                 .{ .function = "fifth_write_is_kept_when_pause_writing_closes", .unwind = 40, .expect = .refuted },
             },

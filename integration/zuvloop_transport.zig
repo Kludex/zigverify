@@ -555,6 +555,23 @@ fn closeWhenCallFails(comptime failing: usize, comptime second: bool) void {
     if (!second) assertEveryFailurePointCovered(failing, before);
 }
 
+/// When libuv refuses the descriptor, creating a transport fails with a Python error, queues
+/// nothing, leaves the loop's list of transports alone, and closes the half-made handle
+/// exactly once.
+///
+/// The close callback is not run here. On this path the checker cannot tell which function
+/// libuv was handed, tries every function of that shape, and does not finish.
+export fn make_transport_cleans_up_when_the_descriptor_is_refused() void {
+    _ = openTransport();
+    stream.open_fails = true;
+    if (makeTcpTransport()) |_| verifier.assert(false) else |_| {}
+    verifier.assert(cpython.errorIsSet());
+    verifier.assert(loop_state.ready.len == 0);
+    verifier.assert(loop_state.transport_head == null);
+    verifier.assert(stream.handleCloses() == 1);
+    verifier.assert(loop_state.closing_handles == 1);
+}
+
 comptime {
     // For each scenario: one proof per call that can fail, and one more per such call where
     // any single later call may fail too, which between them cover every pair of failures.

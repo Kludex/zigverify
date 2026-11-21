@@ -416,9 +416,15 @@ export fn refused_write_request_closes_once_and_releases_everything() void {
     verifier.assert(stream.queuedWrites() == 0);
 }
 
-/// How many single-failure proofs each scenario below gets. The scenario that fails nothing
-/// asserts that it makes no more fallible calls than this, so no failure point is skipped.
+/// How many single-failure proofs each scenario below gets.
 const failure_points = 4;
+
+/// With the highest index, no call may be left to fail: the scenario then made fewer fallible
+/// calls than there are proofs, so each call it makes when nothing fails has had its turn.
+/// Calls made only after a failure are a second failure, which these proofs do not cover.
+fn assertEveryFailurePointCovered(comptime failing: usize, before: usize) void {
+    if (failing == failure_points - 1) verifier.assert(cpython.fallibleCalls() - before <= failing);
+}
 
 /// One `write()` where the call with index `failing` fails, or none if it is past the last:
 /// the write either batches its buffer or raises, and one that raises pins nothing.
@@ -434,7 +440,7 @@ fn writeWhenCallFails(comptime failing: usize) void {
         verifier.assert(transport.pending_count == 1);
     }
     verifier.assert(cpython.releasedBuffers() == 0);
-    verifier.assert(cpython.fallibleCalls() - before <= failure_points);
+    assertEveryFailurePointCovered(failing, before);
 }
 
 /// The peer closing, where the call with index `failing` fails: `eof_received` raising, or
@@ -450,6 +456,77 @@ fn eofWhenCallFails(comptime failing: usize) void {
     stream.deliverRead(stream.eof);
     verifier.assert(!stream.reading());
     verifier.assert(stream.handleCloses() <= 1);
+    assertEveryFailurePointCovered(failing, before);
+}
+
+/// `abort()` with data outstanding, where the call with index `failing` fails: the handle is
+/// still closed exactly once, and every buffer is released once libuv cancels the write.
+fn abortWhenCallFails(comptime failing: usize) void {
+    const transport = openTransport();
+    writeFiveBytes(transport);
+    const before = cpython.fallibleCalls();
+    cpython.fail_at = before + failing;
+    _ = cpython.method("abort").?(@ptrCast(transport), null);
+    verifier.assert(stream.handleCloses() == 1);
+    verifier.assert(transport.pending_count == 0);
+    stream.completeWrite(ecanceled);
+    verifier.assert(stream.handleCloses() == 1);
+    verifier.assert(cpython.releasedBuffers() == 5);
+    assertEveryFailurePointCovered(failing, before);
+}
+
+/// `write_eof()` with data outstanding, where the call with index `failing` fails: once the
+/// writes libuv holds have finished, every buffer is released, and the handle was closed at
+/// most once.
+fn writeEofWhenCallFails(comptime failing: usize) void {
+    const transport = openTransport();
+    writeFiveBytes(transport);
+    const before = cpython.fallibleCalls();
+    cpython.fail_at = before + failing;
+    _ = cpython.method("write_eof").?(@ptrCast(transport), null);
+    inline for (0..2) |_| {
+        if (stream.queuedWrites() != 0) stream.completeWrite(if (stream.handleCloses() == 0) 0 else ecanceled);
+    }
+    verifier.assert(stream.queuedWrites() == 0);
+    verifier.assert(stream.handleCloses() <= 1);
+    verifier.assert(cpython.releasedBuffers() + transport.pending_count == 5);
+    assertEveryFailurePointCovered(failing, before);
+}
+
+/// `writelines()` of two buffers, where the call with index `failing` fails: it either
+/// batches both or raises, and if it raises it has released every view it took.
+fn writelinesWhenCallFails(comptime failing: usize) void {
+    const transport = openTransport();
+    const lines = cpython.tupleOf(&.{ cpython.anyBytes(1), cpython.anyBytes(1) });
+    const before = cpython.fallibleCalls();
+    cpython.fail_at = before + failing;
+    if (cpython.method("writelines").?(@ptrCast(transport), lines) == null) {
+        verifier.assert(cpython.errorIsSet());
+        verifier.assert(transport.pending_count == 0);
+        verifier.assert(cpython.releasedBuffers() == cpython.acquiredBuffers());
+    } else {
+        verifier.assert(transport.pending_count == 2);
+        verifier.assert(cpython.releasedBuffers() == 0);
+    }
+    assertEveryFailurePointCovered(failing, before);
+}
+
+/// A read into a buffered protocol, where the call with index `failing` fails: `get_buffer`
+/// raising, its result refusing a view, or `buffer_updated` raising. The handle is closed
+/// at most once, and every view of the protocol's buffer is released.
+fn bufferedReadWhenCallFails(comptime failing: usize) void {
+    const transport = openTransport();
+    transport.flags |= 1 << 4;
+    transport.cb_get_buffer = @ptrCast(cpython.anyValue());
+    transport.cb_buffer_updated = @ptrCast(cpython.anyValue());
+    cpython.call_result = cpython.anyBytes(4);
+    verifier.assert(cpython.method("_start_reading").?(@ptrCast(transport), null) != null);
+    const before = cpython.fallibleCalls();
+    cpython.fail_at = before + failing;
+    stream.deliverRead(2);
+    verifier.assert(stream.handleCloses() <= 1);
+    verifier.assert(cpython.releasedBuffers() == cpython.acquiredBuffers());
+    assertEveryFailurePointCovered(failing, before);
 }
 
 /// `close()` with data outstanding, where the first call that can fail does. The data is
@@ -478,9 +555,29 @@ comptime {
             fn eof() callconv(.c) void {
                 eofWhenCallFails(failing);
             }
+
+            fn abort() callconv(.c) void {
+                abortWhenCallFails(failing);
+            }
+
+            fn writeEof() callconv(.c) void {
+                writeEofWhenCallFails(failing);
+            }
+
+            fn writelines() callconv(.c) void {
+                writelinesWhenCallFails(failing);
+            }
+
+            fn bufferedRead() callconv(.c) void {
+                bufferedReadWhenCallFails(failing);
+            }
         };
         const suffix = std.fmt.comptimePrint("_when_call_{d}_fails", .{failing});
         @export(&Proofs.write, .{ .name = "write_pins_nothing" ++ suffix });
         @export(&Proofs.eof, .{ .name = "eof_closes_at_most_once" ++ suffix });
+        @export(&Proofs.abort, .{ .name = "abort_closes_once" ++ suffix });
+        @export(&Proofs.writeEof, .{ .name = "write_eof_releases_buffers" ++ suffix });
+        @export(&Proofs.writelines, .{ .name = "writelines_pins_nothing" ++ suffix });
+        @export(&Proofs.bufferedRead, .{ .name = "buffered_read_releases_views" ++ suffix });
     }
 }

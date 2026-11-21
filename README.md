@@ -199,6 +199,10 @@ The `integration` directory uses the models on a real extension, zuvloop. Run it
 | A refused write request closes exactly once and releases every buffer | 27s |
 | `write()` with any one call failing: it batches or raises, and pins nothing if it raises | 4 x 25s |
 | EOF with any one call failing: reading stops and the handle closes at most once | 4 x 30s |
+| `abort()` with any one call failing: still closes exactly once and releases every buffer | 4 x 30s |
+| `write_eof()` with any one call failing: every buffer is released, at most one close | 4 x 34s |
+| `writelines()` with any one call failing: it batches both or releases every view it took | 4 x 25s |
+| A buffered read with any one call failing: every view is released, at most one close | 4 x 40s |
 | `close()` with its first fallible call failing still drains and closes exactly once | 29s |
 | ... and still kept when `pause_writing` calls `close()` | refuted in 15s |
 
@@ -206,7 +210,7 @@ The last one is a real bug. The fifth `write()` flushes a full batch, the flush 
 protocol, and if the protocol closes the transport from `pause_writing`, the byte of that
 fifth write is released without being sent, although `write()` reported success.
 
-Pass `-j1` to run them one at a time, which takes about an hour: together they need
+Pass `-j1` to run them one at a time, which takes about an hour and a quarter: together they need
 more memory than most machines have.
 
 Each flush proof fixes what the socket answers. One proof over every answer at once does
@@ -215,8 +219,10 @@ when the cases take different paths through the code.
 
 The proofs are bounded by the models: text and bytes of up to 16 bytes, tuples of up to
 four items, writes of up to sixteen bytes, and reads of up to a thousand. The scenario
-proofs cover the path where nothing fails and, for `write()` and EOF, each path where one
-call fails; two failures at once are not covered. Creating a transport is proved only when
+proofs cover the path where nothing fails and, for `write()`, `writelines()`, `write_eof()`,
+`abort()`, EOF and buffered reads, each path where one call fails. The proof with the
+highest index asserts that it failed nothing, which is what shows the indices below it
+reached every call. Two failures at once are not covered. Creating a transport is proved only when
 it succeeds, and `close()` only with its first fallible call failing: the other cases gave
 no verdict within 10 to 40 minutes.
 

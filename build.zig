@@ -216,7 +216,14 @@ pub fn build(b: *std.Build) void {
         });
         // One proof per call that can fail, for each scenario: the transport's count of them.
         var failure_proofs: std.ArrayList(Proof) = .empty;
-        for ([_][]const u8{ "write_pins_nothing", "eof_closes_at_most_once" }) |scenario| {
+        for ([_][]const u8{
+            "write_pins_nothing",
+            "eof_closes_at_most_once",
+            "abort_closes_once",
+            "write_eof_releases_buffers",
+            "writelines_pins_nothing",
+            "buffered_read_releases_views",
+        }) |scenario| {
             for (0..4) |failing| {
                 failure_proofs.append(b.allocator, .{
                     .function = b.fmt("{s}_when_call_{d}_fails", .{ scenario, failing }),

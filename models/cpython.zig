@@ -35,6 +35,7 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         var error_set = false;
         var owned_references: usize = 0;
         var buffer_releases: usize = 0;
+        var buffer_views: usize = 0;
         var calls_made: usize = 0;
         var spec: ?*c.PyType_Spec = null;
         /// The type of every bytes object, exported as CPython's own `PyBytes_Type` so that
@@ -99,6 +100,7 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             error_set = false;
             owned_references = 0;
             buffer_releases = 0;
+            buffer_views = 0;
             calls_made = 0;
             instances_used = 0;
             call_result = null;
@@ -179,6 +181,11 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             tuple.len = items.len;
             for (items, 0..) |item, index| tuple.items[index] = @ptrCast(@alignCast(item));
             return @ptrCast(tuple);
+        }
+
+        /// How many buffer views the code has been given.
+        pub fn acquiredBuffers() usize {
+            return buffer_views;
         }
 
         /// How many buffer views with an owner the code has released.
@@ -366,6 +373,7 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             view.?.buf = &exporter.text;
             view.?.len = @intCast(exporter.len);
             view.?.obj = object;
+            buffer_views += 1;
             return 0;
         }
 

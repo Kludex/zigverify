@@ -100,6 +100,8 @@ pub fn Model(comptime uv: type) type {
             verifier.assert(reading_now and closes == 0);
             var buffer: uv.Buf = undefined;
             alloc_callback(@ptrCast(read_stream), 65536, &buffer);
+            // libuv reports `UV_ENOBUFS` when the code hands back no buffer.
+            if (buffer.len == 0) return read_callback(read_stream, -105, &buffer);
             if (nread > 0) {
                 verifier.assert(nread <= buffer.len);
                 verifier.fill(buffer.base[0..@intCast(nread)]);

@@ -4,7 +4,7 @@
 const std = @import("std");
 const verifier = @import("verifier");
 const zuvloop = @import("zuvloop");
-const cpython = @import("cpython").Model(zuvloop.py.c, 4);
+const cpython = @import("cpython").Model(zuvloop.py.c, 16);
 const stream = @import("libuv_stream").Model(zuvloop.uv);
 
 comptime {
@@ -380,4 +380,107 @@ export fn make_transport_opens_and_schedules_the_connection() void {
     verifier.assert(loop_state.ready.len == 2);
     verifier.assert(loop_state.transport_head == transport);
     verifier.assert(stream.handleCloses() == 0);
+}
+
+/// The same five writes with sixteen bytes each: all eighty are with libuv or pending.
+export fn sixteen_byte_writes_are_all_kept() void {
+    const transport = openTransport();
+    const write = cpython.method("write").?;
+    inline for (0..5) |_| {
+        verifier.assert(write(@ptrCast(transport), cpython.anyBytes(16)) != null);
+    }
+    verifier.assert(stream.queuedBytes() + transport.pending_size == 80);
+}
+
+/// A thousand bytes arriving at once reach the protocol in one call.
+export fn large_read_reaches_the_protocol() void {
+    const transport = openTransport();
+    transport.cb_data_received = @ptrCast(cpython.anyValue());
+    transport.read_size = 16 * 1024;
+    verifier.assert(cpython.method("_start_reading").?(@ptrCast(transport), null) != null);
+    const before = cpython.calls();
+    stream.deliverRead(1000);
+    verifier.assert(cpython.calls() == before + 1);
+    verifier.assert(stream.handleCloses() == 0);
+}
+
+/// When libuv refuses the write request that the fifth write's flush makes, the transport
+/// closes exactly once and releases all five buffers, the fifth among them.
+export fn refused_write_request_closes_once_and_releases_everything() void {
+    const transport = openTransport();
+    stream.refuses_writes = true;
+    writeFiveBytes(transport);
+    verifier.assert(stream.handleCloses() == 1);
+    verifier.assert(transport.pending_count == 0);
+    verifier.assert(cpython.releasedBuffers() == 5);
+    verifier.assert(stream.queuedWrites() == 0);
+}
+
+/// How many single-failure proofs each scenario below gets. The scenario that fails nothing
+/// asserts that it makes no more fallible calls than this, so no failure point is skipped.
+const failure_points = 4;
+
+/// One `write()` where the call with index `failing` fails, or none if it is past the last:
+/// the write either batches its buffer or raises, and one that raises pins nothing.
+fn writeWhenCallFails(comptime failing: usize) void {
+    const transport = openTransport();
+    const data = cpython.anyBytes(1);
+    const before = cpython.fallibleCalls();
+    cpython.fail_at = before + failing;
+    if (cpython.method("write").?(@ptrCast(transport), data) == null) {
+        verifier.assert(cpython.errorIsSet());
+        verifier.assert(transport.pending_count == 0);
+    } else {
+        verifier.assert(transport.pending_count == 1);
+    }
+    verifier.assert(cpython.releasedBuffers() == 0);
+    verifier.assert(cpython.fallibleCalls() - before <= failure_points);
+}
+
+/// The peer closing, where the call with index `failing` fails: `eof_received` raising, or
+/// the error report about it failing in turn. Reading always stops, and the handle is
+/// closed at most once.
+fn eofWhenCallFails(comptime failing: usize) void {
+    const transport = openTransport();
+    transport.cb_eof_received = @ptrCast(cpython.anyValue());
+    transport.read_size = 16 * 1024;
+    verifier.assert(cpython.method("_start_reading").?(@ptrCast(transport), null) != null);
+    const before = cpython.fallibleCalls();
+    cpython.fail_at = before + failing;
+    stream.deliverRead(stream.eof);
+    verifier.assert(!stream.reading());
+    verifier.assert(stream.handleCloses() <= 1);
+}
+
+/// `close()` with data outstanding, where the first call that can fail does. The data is
+/// still sent, the handle is still closed exactly once, and every buffer is still released.
+export fn close_drains_and_closes_once_when_its_first_call_fails() void {
+    const transport = openTransport();
+    writeFiveBytes(transport);
+    cpython.fail_at = cpython.fallibleCalls();
+    closeFromCallback();
+    stream.completeWrite(0);
+    stream.completeWrite(0);
+    verifier.assert(stream.acceptedBytes() == 5);
+    verifier.assert(stream.handleCloses() == 1);
+    verifier.assert(cpython.releasedBuffers() == 5);
+    stream.deliverClose();
+    verifier.assert(loop_state.closing_handles == 0);
+}
+
+comptime {
+    for (0..failure_points) |failing| {
+        const Proofs = struct {
+            fn write() callconv(.c) void {
+                writeWhenCallFails(failing);
+            }
+
+            fn eof() callconv(.c) void {
+                eofWhenCallFails(failing);
+            }
+        };
+        const suffix = std.fmt.comptimePrint("_when_call_{d}_fails", .{failing});
+        @export(&Proofs.write, .{ .name = "write_pins_nothing" ++ suffix });
+        @export(&Proofs.eof, .{ .name = "eof_closes_at_most_once" ++ suffix });
+    }
 }

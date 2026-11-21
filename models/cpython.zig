@@ -45,6 +45,12 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         /// Whether calls that can fail may do so. Turning it off follows one path, the one
         /// where the interpreter is healthy, and is what makes a long scenario affordable.
         pub var failures = true;
+        /// Fails exactly one call: the one with this index among the calls that can fail,
+        /// counted from `reset`. Every other call succeeds, whatever `failures` says. One proof
+        /// per index walks every single-failure path, each as cheap as the path where nothing
+        /// fails, where letting all of them fail at once is not affordable.
+        pub var fail_at: ?usize = null;
+        var fallible_calls: usize = 0;
         /// Runs inside every modelled call into Python, standing in for the Python code that
         /// call would run. This is how a harness has a protocol callback reenter the code.
         pub var on_call: ?*const fn () void = null;
@@ -86,6 +92,8 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             thread_state = @splat(0);
             spec = null;
             failures = true;
+            fail_at = null;
+            fallible_calls = 0;
             on_call = null;
             used = 0;
             error_set = false;
@@ -148,6 +156,11 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             return @ptrCast(tuple);
         }
 
+        /// How many calls that can fail the code has made since `reset`.
+        pub fn fallibleCalls() usize {
+            return fallible_calls;
+        }
+
         /// How many times the code has called into Python: callbacks, methods, any callable.
         pub fn calls() usize {
             return calls_made;
@@ -206,7 +219,7 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
         fn newReference() ?*c.PyObject {
             // Taken from the pool before deciding, for the reason given in `anyObject`.
             const object = create(.other, false);
-            if (failures and verifier.any(bool)) {
+            if (fails()) {
                 error_set = true;
                 return null;
             }
@@ -219,9 +232,16 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             return @ptrCast(@alignCast(object.?));
         }
 
+        /// Whether the call being modelled, one that can fail, does.
+        fn fails() bool {
+            defer fallible_calls += 1;
+            if (fail_at) |index| return fallible_calls == index;
+            return failures and verifier.any(bool);
+        }
+
         /// A call that may fail, reporting it as -1 with an error set.
         fn status() c_int {
-            if (!failures or verifier.any(bool)) return 0;
+            if (!fails()) return 0;
             error_set = true;
             return -1;
         }
@@ -579,7 +599,7 @@ pub fn Model(comptime c: type, comptime max_text: usize) type {
             verifier.assert(instances_used < instances.len);
             const instance = &instances[instances_used];
             instances_used += 1;
-            if (failures and verifier.any(bool)) {
+            if (fails()) {
                 error_set = true;
                 return null;
             }

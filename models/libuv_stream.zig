@@ -25,6 +25,8 @@ pub fn Model(comptime uv: type) type {
         /// Whether a queued write, a shutdown or the queue size may come out more than one way.
         /// Turning it off accepts every request and reports the queue exactly.
         pub var failures = true;
+        /// Whether libuv refuses every write request, as it does on a broken connection.
+        pub var refuses_writes = false;
 
         const Queued = struct {
             request: Parameter(uv.uv_write, 0),
@@ -51,6 +53,7 @@ pub fn Model(comptime uv: type) type {
         pub fn reset() void {
             socket = .anything;
             failures = true;
+            refuses_writes = false;
             queued_writes = 0;
             queued_bytes = 0;
             completed_writes = 0;
@@ -176,7 +179,7 @@ pub fn Model(comptime uv: type) type {
             _ = stream;
             verifier.assert(closes == 0);
             const bytes = total(buffers, count);
-            if (failures and verifier.any(bool)) return epipe;
+            if (refuses_writes or (failures and verifier.any(bool))) return epipe;
             verifier.assert(completed_writes + queued_writes < queue.len);
             queue[completed_writes + queued_writes] = .{ .request = request, .callback = callback, .bytes = bytes };
             queued_writes += 1;

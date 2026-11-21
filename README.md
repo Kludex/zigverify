@@ -155,6 +155,20 @@ type the code registered, so the harness calls it the way the interpreter would.
 Both models have a `failures` switch. Turned off, every call that can fail succeeds, the
 checker follows one path, and a scenario of many calls finishes in seconds.
 
+Letting every call fail at once is rarely affordable: a scenario that takes 30 seconds on
+one path ran out of memory after 20 minutes that way. Set `cpython.fail_at` to an index
+instead and exactly that call fails, counted among the calls that can. One proof per index
+covers every single-failure path, each about as cheap as the path where nothing fails:
+
+```zig
+fn eofWhenCallFails(comptime failing: usize) void {
+    const transport = openTransport();
+    cpython.fail_at = cpython.fallibleCalls() + failing;
+    stream.deliverRead(stream.eof);
+    verifier.assert(stream.handleCloses() <= 1);
+}
+```
+
 The `integration` directory uses the models on a real extension, zuvloop. Run it with
 `zig build verify-zuvloop -Dzuvloop=<checkout> -Dpython-include=<dir>`.
 
@@ -180,13 +194,19 @@ The `integration` directory uses the models on a real extension, zuvloop. Run it
 | `pause_reading()` stops reads and `resume_reading()` restarts them | 22s |
 | A buffered protocol's buffer is filled, reported and released once | 19s |
 | Creating a TCP transport opens it and queues `connection_made` and the start of reading | 7.6 min |
+| Five sixteen-byte writes are all kept | 25s |
+| A thousand-byte read reaches the protocol in one call | 29s |
+| A refused write request closes exactly once and releases every buffer | 27s |
+| `write()` with any one call failing: it batches or raises, and pins nothing if it raises | 4 x 25s |
+| EOF with any one call failing: reading stops and the handle closes at most once | 4 x 30s |
+| `close()` with its first fallible call failing still drains and closes exactly once | 29s |
 | ... and still kept when `pause_writing` calls `close()` | refuted in 15s |
 
 The last one is a real bug. The fifth `write()` flushes a full batch, the flush pauses the
 protocol, and if the protocol closes the transport from `pause_writing`, the byte of that
 fifth write is released without being sent, although `write()` reported success.
 
-Pass `-j1` to run them one at a time, which takes about 30 minutes: together they need
+Pass `-j1` to run them one at a time, which takes about an hour: together they need
 more memory than most machines have.
 
 Each flush proof fixes what the socket answers. One proof over every answer at once does
@@ -194,8 +214,11 @@ not fit in memory, and neither does one over every Python object: split a proof 
 when the cases take different paths through the code.
 
 The proofs are bounded by the models: text and bytes of up to 16 bytes, tuples of up to
-four items, and a handful of one- and two-byte writes. The scenario proofs follow one
-path each: a healthy interpreter and a libuv that accepts every request.
+four items, writes of up to sixteen bytes, and reads of up to a thousand. The scenario
+proofs cover the path where nothing fails and, for `write()` and EOF, each path where one
+call fails; two failures at once are not covered. Creating a transport is proved only when
+it succeeds, and `close()` only with its first fallible call failing: the other cases gave
+no verdict within 10 to 40 minutes.
 
 An `assert()` in a translated C header is checked too. A failing one is reported as
 `assert() failed in C code`, with its line.

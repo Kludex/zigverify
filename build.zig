@@ -206,9 +206,28 @@ pub fn build(b: *std.Build) void {
                 // The loop's ready queue grows by doubling. Under the proof's own bound the checker
                 // would unroll that forty times over a size it cannot fix; these loops run once.
                 .{ .function = "make_transport_opens_and_schedules_the_connection", .unwind = 40, .bounds = ready_queue_bounds },
+                .{ .function = "close_drains_and_closes_once_when_its_first_call_fails", .unwind = 40 },
+                .{ .function = "sixteen_byte_writes_are_all_kept", .unwind = 40 },
+                .{ .function = "large_read_reaches_the_protocol", .unwind = 40 },
+                .{ .function = "refused_write_request_closes_once_and_releases_everything", .unwind = 40 },
                 // A bug in zuvloop at the time of writing. Drop `.expect` once it is fixed there.
                 .{ .function = "fifth_write_is_kept_when_pause_writing_closes", .unwind = 40, .expect = .refuted },
             },
+        });
+        // One proof per call that can fail, for each scenario: the transport's count of them.
+        var failure_proofs: std.ArrayList(Proof) = .empty;
+        for ([_][]const u8{ "write_pins_nothing", "eof_closes_at_most_once" }) |scenario| {
+            for (0..4) |failing| {
+                failure_proofs.append(b.allocator, .{
+                    .function = b.fmt("{s}_when_call_{d}_fails", .{ scenario, failing }),
+                    .unwind = 40,
+                }) catch @panic("OOM");
+            }
+        }
+        prover.add(zuvloop_step, .{
+            .root_source_file = b.path("integration/zuvloop_transport.zig"),
+            .imports = zuvloop_imports,
+            .proofs = failure_proofs.items,
         });
         prover.add(zuvloop_step, .{
             .root_source_file = b.path("integration/zuvloop.zig"),

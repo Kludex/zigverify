@@ -184,6 +184,31 @@ export fn fifth_write_is_kept_when_pause_writing_closes() void {
     verifier.assert(stream.queuedBytes() + transport.pending_size == 5);
 }
 
+fn writeFromCallback() void {
+    // Only the first call writes: the write below may itself pause the protocol.
+    cpython.on_call = null;
+    wrote_from_callback = cpython.method("write").?(@ptrCast(&registered), cpython.anyBytes(1)) != null;
+}
+
+var wrote_from_callback = false;
+
+/// Refuted, a second bug in zuvloop: `close()` flushes what is pending, that flush pauses
+/// the protocol, and the protocol writes from `pause_writing`. The transport is not marked
+/// closing yet, so the write is accepted, but nothing ever flushes it.
+export fn write_from_pause_writing_during_close_is_kept() void {
+    const transport = openTransport();
+    const write = cpython.method("write").?;
+    inline for (0..4) |_| {
+        verifier.assert(write(@ptrCast(transport), cpython.anyBytes(1)) != null);
+    }
+    wrote_from_callback = false;
+    cpython.on_call = writeFromCallback;
+    closeFromCallback();
+    verifier.assert(wrote_from_callback);
+    stream.completeWrite(0);
+    verifier.assert(stream.acceptedBytes() == 5);
+}
+
 /// When libuv finishes the queued write, the transport releases the four buffers it pinned
 /// for it, and keeps the fifth, which is still waiting to be flushed.
 export fn completed_write_releases_its_buffers() void {

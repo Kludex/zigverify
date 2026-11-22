@@ -253,7 +253,8 @@ pub fn build(b: *std.Build) void {
                 .{ .function = "refused_read_start_closes_once", .unwind = 40 },
                 .{ .function = "refused_read_stop_raises_and_keeps_reading", .unwind = 40 },
                 .{ .function = "refused_shutdown_leaves_the_transport_open", .unwind = 40 },
-                // A bug in zuvloop at the time of writing. Drop `.expect` once it is fixed there.
+                // Bugs in zuvloop at the time of writing. Drop `.expect` once they are fixed there.
+                .{ .function = "write_from_pause_writing_during_close_is_kept", .unwind = 40, .expect = .refuted },
                 .{ .function = "fifth_write_is_kept_when_pause_writing_closes", .unwind = 40, .expect = .refuted },
             },
         });

@@ -217,11 +217,15 @@ The `integration` directory uses the models on a real extension, zuvloop. Run it
 | Creating a pipe transport fails cleanly when the handle cannot be set up, or the descriptor is refused | 16 min, 1 hour |
 | A refused half-close leaves the transport open and holding no request | 26s |
 | `close()` with any one call failing: still drains, closes exactly once, releases every buffer | 4 x 60s |
-| ... and still kept when `pause_writing` calls `close()` | refuted in 15s |
+| Five writes are all kept when `pause_writing` calls `close()` | refuted in 15s |
+| A write made from `pause_writing` while `close()` is flushing is kept | refuted in 41s |
 
-The last one is a real bug. The fifth `write()` flushes a full batch, the flush pauses the
-protocol, and if the protocol closes the transport from `pause_writing`, the byte of that
-fifth write is released without being sent, although `write()` reported success.
+The last two are real bugs, both lost writes that `write()` reported as accepted. In the
+first, the fifth `write()` flushes a full batch, the flush pauses the protocol, and the
+protocol closes the transport from `pause_writing`: the fifth write's byte is released
+without being sent. In the second, `close()` itself flushes, the flush pauses the
+protocol, and the protocol writes from `pause_writing`: the transport is not marked closing
+yet, so the write is accepted, and nothing ever flushes it.
 
 Pass `-j1` to run them one at a time, which takes about five hours: run together they
 need more memory than most machines have.

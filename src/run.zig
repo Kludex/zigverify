@@ -46,7 +46,7 @@ pub fn main(init: std.process.Init) !void {
     // Every tool runs the same way: directly, or inside the image with the inputs mounted.
     var tool: std.ArrayList([]const u8) = .empty;
     if (args[7].len != 0) {
-        try tool.appendSlice(arena, &.{ "docker", "run", "--rm" });
+        try tool.appendSlice(arena, &.{ "docker", "run", "--rm", "--memory=16g", "--memory-swap=16g" });
         for ([_][]const u8{ std.fs.path.dirname(c_file).?, lib_dir, std.fs.path.dirname(shim).? }) |dir| {
             try tool.appendSlice(arena, &.{ "-v", try std.fmt.allocPrint(arena, "{s}:{s}:ro", .{ dir, dir }) });
         }

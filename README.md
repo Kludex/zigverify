@@ -322,6 +322,23 @@ proof from 182 seconds to 9.
 The function is named as reports print it: the file name, then the path to the
 declaration, joined by underscores. A name that matches nothing is an error.
 
+## One proof at a time, and time limits
+
+```
+zig build verify -Dproof=midpoint_is_between
+```
+
+`-Dproof` runs only the proof with that function name. Declare the option in your own
+build and assign it to `prover.only`.
+
+```zig
+.{ .function = "decoder_never_panics", .unwind = 65, .timeout = 600 },
+```
+
+`timeout` is in seconds. A proof that is too large does not fail on its own: the checker
+runs until it is killed. With a timeout the proof fails with `no verdict within the
+proof's timeout`.
+
 ## Callbacks
 
 ```zig
@@ -410,5 +427,5 @@ does not help: code that falls back to narrower blocks does more loads, and gets
 - A proof about code that calls C is only as good as the models the harness gives it.
 - Languages other than Zig and C need their own front end. Rust already has
   [Kani](https://github.com/model-checking/kani), which uses the same checker.
-- A proof that needs too much memory ends with an error saying cbmc was killed. There is no timeout yet.
+- A proof that needs too much memory ends with an error saying cbmc was killed.
 - CBMC 5.95 and Zig 0.16.0 are the tested versions.

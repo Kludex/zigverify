@@ -18,7 +18,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.len < 9) {
         std.debug.print(
             "usage: {s} <harness.c> <zig-lib-dir> <shim.c> <function> <proved|refuted> <unwind> <docker-image or \"\">" ++
-                " <harness.zig or \"\"> [function=unwind ...] [caller>target,... ...] [--work=<dir>]\n",
+                " <harness.zig or \"\"> [function=unwind ...] [caller>target,... ...] [--work=<dir>] [--timeout=<seconds>]\n",
             .{args[0]},
         );
         std.process.exit(2);
@@ -34,9 +34,12 @@ pub fn main(init: std.process.Init) !void {
     var unwind_bounds: std.ArrayList([]const u8) = .empty;
     var callbacks: std.ArrayList([]const u8) = .empty;
     var work_dir: ?[]const u8 = null;
+    var timeout: ?[]const u8 = null;
     for (args[9..]) |argument| {
         if (std.mem.startsWith(u8, argument, "--work=")) {
             work_dir = try std.fs.path.resolve(arena, &.{ cwd, argument["--work=".len..] });
+        } else if (std.mem.startsWith(u8, argument, "--timeout=")) {
+            timeout = argument["--timeout=".len..];
         } else if (std.mem.indexOfScalar(u8, argument, '>') != null) {
             try callbacks.append(arena, argument);
         } else try unwind_bounds.append(arena, argument);
@@ -94,6 +97,8 @@ pub fn main(init: std.process.Init) !void {
     }
 
     var argv = try tool.clone(arena);
+    // The checker has no time limit of its own, and a proof that is too large never returns.
+    if (timeout) |seconds| try argv.appendSlice(arena, &.{ "timeout", seconds });
     try argv.append(arena, "cbmc");
     try argv.appendSlice(arena, program);
     try argv.appendSlice(arena, &.{ "--function", function });
@@ -139,6 +144,10 @@ pub fn main(init: std.process.Init) !void {
     };
     if (outcome == .tool_error and killed) {
         outcome = .{ .tool_error = "cbmc was killed before it finished, most likely for running out of memory" };
+    }
+    // 124 is how `timeout` reports that it had to stop the command.
+    if (timeout != null and result.term == .exited and result.term.exited == 124) {
+        outcome = .{ .tool_error = try std.fmt.allocPrint(arena, "no verdict within the proof's timeout of {s} seconds", .{timeout.?}) };
     }
 
     var buffer: [4096]u8 = undefined;

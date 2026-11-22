@@ -30,6 +30,9 @@ pub const Proof = struct {
     bounds: []const Bound = &.{},
     /// Indirect calls whose possible targets the checker should be told.
     callbacks: []const Callback = &.{},
+    /// Seconds after which the checker is stopped and the proof fails with no verdict. A
+    /// proof that is too large does not fail on its own: it runs until something kills it.
+    timeout: ?u32 = null,
 };
 
 /// The functions an indirect call may reach. Without this, when the checker cannot tell
@@ -55,6 +58,9 @@ pub const Prover = struct {
     runner: *std.Build.Step.Compile,
     shim: std.Build.LazyPath,
     docker_image: ?[]const u8,
+    /// When set, only the proof with this function name is run. Set it from a build option
+    /// to work on one proof without waiting for the others.
+    only: ?[]const u8 = null,
 
     /// `zigverify` is this package's builder: `b` here, `b.dependency("zigverify", .{}).builder` elsewhere.
     /// With a `docker_image`, CBMC runs in that image instead of from `PATH`.
@@ -110,6 +116,7 @@ pub const Prover = struct {
     ) void {
         const b = prover.b;
         for (proofs) |proof| {
+            if (prover.only) |name| if (!std.mem.eql(u8, name, proof.function)) continue;
             const run = b.addRunArtifact(prover.runner);
             run.addFileArg(c_file);
             run.addDirectoryArg(.{ .cwd_relative = b.graph.zig_lib_directory.path.? });
@@ -127,6 +134,7 @@ pub const Prover = struct {
                 _ = run.addPrefixedOutputDirectoryArg("--work=", "work");
                 run.has_side_effects = true;
             }
+            if (proof.timeout) |seconds| run.addArg(b.fmt("--timeout={d}", .{seconds}));
             step.dependOn(&run.step);
         }
     }
@@ -140,7 +148,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(tests).step);
 
     const docker_image = b.option([]const u8, "cbmc-docker-image", "Run cbmc from this Docker image instead of PATH");
-    const prover: Prover = .init(b, b, docker_image);
+    var prover: Prover = .init(b, b, docker_image);
+    prover.only = b.option([]const u8, "proof", "Run only the proof with this function name");
     const verify_step = b.step("verify", "Prove the examples, and check that their seeded bugs are found");
     prover.add(verify_step, .{
         .root_source_file = b.path("examples/midpoint.zig"),

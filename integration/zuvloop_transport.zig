@@ -355,10 +355,14 @@ export fn getsockopt(fd: c_int, level: i32, name: u32, noalias value: ?*anyopaqu
 }
 
 fn makeTcpTransport() zuvloop.py.Error!*zuvloop.py.Object {
+    return makeTransportOfKind(zuvloop.transport.KIND_TCP);
+}
+
+fn makeTransportOfKind(comptime kind: c_int) zuvloop.py.Error!*zuvloop.py.Object {
     const none = zuvloop.py.none();
     const arguments = [_]?*zuvloop.py.Object{
         @ptrCast(cpython.intOf(7)),
-        @ptrCast(cpython.intOf(zuvloop.transport.KIND_TCP)),
+        @ptrCast(cpython.intOf(kind)),
         @ptrCast(cpython.anyValue()),
         none,
         none,
@@ -656,4 +660,30 @@ export fn make_transport_raises_when_the_handle_cannot_be_set_up() void {
     verifier.assert(loop_state.transport_head == null);
     verifier.assert(loop_state.external_handles == 1);
     verifier.assert(stream.handleCloses() == 0);
+}
+
+/// Creating a transport for a pipe opens it and queues the connection's first calls, as it
+/// does for a TCP socket.
+export fn make_pipe_transport_opens_and_schedules_the_connection() void {
+    _ = openTransport();
+    const made = makeTransportOfKind(zuvloop.transport.KIND_PIPE) catch unreachable;
+    const transport: *zuvloop.transport.Transport = @ptrCast(@alignCast(made));
+    verifier.assert(transport.flags & open != 0);
+    verifier.assert(transport.kind == zuvloop.transport.KIND_PIPE);
+    verifier.assert(loop_state.external_handles == 2);
+    verifier.assert(loop_state.ready.len == 2);
+    verifier.assert(stream.handleCloses() == 0);
+}
+
+/// When libuv cannot stop reading, `pause_reading()` raises, and the transport is neither
+/// closed nor marked as paused: it is still reading, which is what libuv is doing.
+export fn refused_read_stop_raises_and_keeps_reading() void {
+    const transport = openTransport();
+    verifier.assert(cpython.method("_start_reading").?(@ptrCast(transport), null) != null);
+    stream.read_stop_fails = true;
+    verifier.assert(cpython.method("pause_reading").?(@ptrCast(transport), null) == null);
+    verifier.assert(cpython.errorIsSet());
+    verifier.assert(stream.reading());
+    verifier.assert(stream.handleCloses() == 0);
+    verifier.assert(cpython.method("is_reading").?(@ptrCast(transport), null) != null);
 }

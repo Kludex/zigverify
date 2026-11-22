@@ -29,6 +29,8 @@ pub fn Model(comptime uv: type) type {
         pub var open_fails = false;
         /// Whether starting to read fails, as it does on a descriptor that cannot be read.
         pub var read_start_fails = false;
+        /// Whether stopping reads fails.
+        pub var read_stop_fails = false;
         /// Whether a half-close is refused, as it is on a socket that is no longer connected.
         pub var shutdown_fails = false;
         /// Whether libuv cannot set up the handle at all.
@@ -63,6 +65,7 @@ pub fn Model(comptime uv: type) type {
             failures = true;
             refuses_writes = false;
             read_start_fails = false;
+            read_stop_fails = false;
             shutdown_fails = false;
             init_fails = false;
             close_callback = null;
@@ -254,6 +257,7 @@ pub fn Model(comptime uv: type) type {
 
         fn readStop(stream: Parameter(uv.uv_read_stop, 0)) callconv(.c) c_int {
             _ = stream;
+            if (read_stop_fails) return einval;
             reading_now = false;
             return 0;
         }

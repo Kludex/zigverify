@@ -212,6 +212,8 @@ The `integration` directory uses the models on a real extension, zuvloop. Run it
 | Each of the seven scenarios above with any number of calls failing | 28 x 30-100s |
 | Creating a transport when libuv cannot set up the handle raises and queues nothing | 16 min |
 | A refused read start closes the transport exactly once | 24s |
+| A refused read stop makes `pause_reading()` raise and leaves the transport reading | 28s |
+| Creating a pipe transport opens it and queues the connection's first calls | 10 min |
 | A refused half-close leaves the transport open and holding no request | 26s |
 | `close()` with any one call failing: still drains, closes exactly once, releases every buffer | 4 x 60s |
 | ... and still kept when `pause_writing` calls `close()` | refuted in 15s |
@@ -220,7 +222,7 @@ The last one is a real bug. The fifth `write()` flushes a full batch, the flush 
 protocol, and if the protocol closes the transport from `pause_writing`, the byte of that
 fifth write is released without being sent, although `write()` reported success.
 
-Pass `-j1` to run them one at a time, which takes about three and a half hours: run together they
+Pass `-j1` to run them one at a time, which takes about three and three quarter hours: run together they
 need more memory than most machines have.
 
 Each flush proof fixes what the socket answers. One proof over every answer at once does
@@ -331,7 +333,10 @@ functions fed the wrong kind of object is enough to stop a proof from finishing.
 `callbacks` names, for the first indirect call in `caller`, the functions it may reach.
 Code that stores a callback on one path and runs it on another is where this comes up: on
 zuvloop it turned a proof that gave no verdict in 40 minutes, four times, into one that
-finishes. The targets are an assumption the proof rests on, so keep the list complete.
+finishes.
+
+The list is checked, not trusted. If the call can reach a function that is not named, the
+proof fails with `dereferenced function pointer must be ...`.
 
 ## Verdicts
 

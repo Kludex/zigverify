@@ -240,7 +240,9 @@ pub fn build(b: *std.Build) void {
                     }},
                 },
                 .{ .function = "make_transport_raises_when_the_handle_cannot_be_set_up", .unwind = 40, .bounds = ready_queue_bounds },
+                .{ .function = "make_pipe_transport_opens_and_schedules_the_connection", .unwind = 40, .bounds = ready_queue_bounds },
                 .{ .function = "refused_read_start_closes_once", .unwind = 40 },
+                .{ .function = "refused_read_stop_raises_and_keeps_reading", .unwind = 40 },
                 .{ .function = "refused_shutdown_leaves_the_transport_open", .unwind = 40 },
                 // A bug in zuvloop at the time of writing. Drop `.expect` once it is fixed there.
                 .{ .function = "fifth_write_is_kept_when_pause_writing_closes", .unwind = 40, .expect = .refuted },
@@ -285,10 +287,17 @@ pub fn build(b: *std.Build) void {
 
     prover.add(verify_step, .{
         .root_source_file = b.path("examples/callback.zig"),
-        .proofs = &.{.{
-            .function = "the_registered_callback_counts_once",
-            .callbacks = &.{.{ .caller = "callback_fire", .targets = &.{"callback_count"} }},
-        }},
+        .proofs = &.{
+            .{
+                .function = "the_registered_callback_counts_once",
+                .callbacks = &.{.{ .caller = "callback_fire", .targets = &.{"callback_count"} }},
+            },
+            .{
+                .function = "a_wrong_target_list_is_caught",
+                .callbacks = &.{.{ .caller = "callback_fire", .targets = &.{"callback_skip"} }},
+                .expect = .refuted,
+            },
+        },
     });
     prover.addC(verify_step, .{
         .c_source_file = b.path("examples/midpoint.c"),

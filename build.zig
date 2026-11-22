@@ -28,6 +28,18 @@ pub const Proof = struct {
     unwind: u32 = 64,
     /// Bounds for single functions, overriding `unwind` for their loops and their recursion.
     bounds: []const Bound = &.{},
+    /// Indirect calls whose possible targets the checker should be told.
+    callbacks: []const Callback = &.{},
+};
+
+/// The functions an indirect call may reach. Without this, when the checker cannot tell
+/// which function a pointer holds, it tries every function of the same shape.
+pub const Callback = struct {
+    /// The function that makes the indirect call, named as reports print it. Its first
+    /// indirect call is the one restricted.
+    caller: []const u8,
+    /// The functions that call may reach, named the same way.
+    targets: []const []const u8,
 };
 
 pub const Bound = struct {
@@ -106,6 +118,15 @@ pub const Prover = struct {
             run.addArg(prover.docker_image orelse "");
             if (zig_source) |file| run.addFileArg(file) else run.addArg("");
             for (proof.bounds) |bound| run.addArg(b.fmt("{s}={d}", .{ bound.function, bound.unwind }));
+            for (proof.callbacks) |callback| {
+                run.addArg(b.fmt("{s}>{s}", .{ callback.caller, std.mem.join(b.allocator, ",", callback.targets) catch @panic("OOM") }));
+            }
+            if (proof.callbacks.len != 0) {
+                // Where the compiled and rewritten programs go. The run still happens every
+                // time: its result is the verdict, not these files.
+                _ = run.addPrefixedOutputDirectoryArg("--work=", "work");
+                run.has_side_effects = true;
+            }
             step.dependOn(&run.step);
         }
     }
@@ -209,7 +230,15 @@ pub fn build(b: *std.Build) void {
                 .{ .function = "sixteen_byte_writes_are_all_kept", .unwind = 40 },
                 .{ .function = "large_read_reaches_the_protocol", .unwind = 40 },
                 .{ .function = "refused_write_request_closes_once_and_releases_everything", .unwind = 40 },
-                .{ .function = "make_transport_cleans_up_when_the_descriptor_is_refused", .unwind = 40, .bounds = ready_queue_bounds },
+                .{
+                    .function = "make_transport_cleans_up_when_the_descriptor_is_refused",
+                    .unwind = 40,
+                    .bounds = ready_queue_bounds,
+                    .callbacks = &.{.{
+                        .caller = "libuv_stream_Model_28zig_uv_29_deliverClose",
+                        .targets = &.{ "zig_transport_onOpenFailed", "zig_transport_onClosed" },
+                    }},
+                },
                 .{ .function = "make_transport_raises_when_the_handle_cannot_be_set_up", .unwind = 40, .bounds = ready_queue_bounds },
                 .{ .function = "refused_read_start_closes_once", .unwind = 40 },
                 .{ .function = "refused_shutdown_leaves_the_transport_open", .unwind = 40 },
@@ -254,6 +283,13 @@ pub fn build(b: *std.Build) void {
         });
     }
 
+    prover.add(verify_step, .{
+        .root_source_file = b.path("examples/callback.zig"),
+        .proofs = &.{.{
+            .function = "the_registered_callback_counts_once",
+            .callbacks = &.{.{ .caller = "callback_fire", .targets = &.{"callback_count"} }},
+        }},
+    });
     prover.addC(verify_step, .{
         .c_source_file = b.path("examples/midpoint.c"),
         .proofs = &.{

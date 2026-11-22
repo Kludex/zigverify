@@ -18,7 +18,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.len < 9) {
         std.debug.print(
             "usage: {s} <harness.c> <zig-lib-dir> <shim.c> <function> <proved|refuted> <unwind> <docker-image or \"\">" ++
-                " <harness.zig or \"\"> [function=unwind ...]\n",
+                " <harness.zig or \"\"> [function=unwind ...] [caller>target,... ...] [--work=<dir>]\n",
             .{args[0]},
         );
         std.process.exit(2);
@@ -31,31 +31,85 @@ pub fn main(init: std.process.Init) !void {
     const expect_refuted = std.mem.eql(u8, args[5], "refuted");
     const unwind = args[6];
 
-    var argv: std.ArrayList([]const u8) = .empty;
+    var unwind_bounds: std.ArrayList([]const u8) = .empty;
+    var callbacks: std.ArrayList([]const u8) = .empty;
+    var work_dir: ?[]const u8 = null;
+    for (args[9..]) |argument| {
+        if (std.mem.startsWith(u8, argument, "--work=")) {
+            work_dir = try std.fs.path.resolve(arena, &.{ cwd, argument["--work=".len..] });
+        } else if (std.mem.indexOfScalar(u8, argument, '>') != null) {
+            try callbacks.append(arena, argument);
+        } else try unwind_bounds.append(arena, argument);
+    }
+    const c_source = try std.Io.Dir.cwd().readFileAlloc(init.io, c_file, arena, .unlimited);
+
+    // Every tool runs the same way: directly, or inside the image with the inputs mounted.
+    var tool: std.ArrayList([]const u8) = .empty;
     if (args[7].len != 0) {
-        try argv.appendSlice(arena, &.{ "docker", "run", "--rm" });
+        try tool.appendSlice(arena, &.{ "docker", "run", "--rm" });
         for ([_][]const u8{ std.fs.path.dirname(c_file).?, lib_dir, std.fs.path.dirname(shim).? }) |dir| {
-            try argv.appendSlice(arena, &.{ "-v", try std.fmt.allocPrint(arena, "{s}:{s}:ro", .{ dir, dir }) });
+            try tool.appendSlice(arena, &.{ "-v", try std.fmt.allocPrint(arena, "{s}:{s}:ro", .{ dir, dir }) });
         }
-        try argv.append(arena, args[7]);
+        if (work_dir) |dir| try tool.appendSlice(arena, &.{ "-v", try std.fmt.allocPrint(arena, "{s}:{s}", .{ dir, dir }) });
+        try tool.append(arena, args[7]);
     }
     // `zig.h` for generated C, and `verifier.h`, which sits beside the shim, for harnesses written in C.
-    try argv.appendSlice(arena, &.{ "cbmc", c_file, shim, "-I", lib_dir, "-I", std.fs.path.dirname(shim).? });
+    var program: []const []const u8 = &.{ c_file, shim, "-I", lib_dir, "-I", std.fs.path.dirname(shim).? };
+
+    // An indirect call whose target the checker cannot pin down is tried against every
+    // function of that shape. Naming its targets needs the program compiled and rewritten
+    // by CBMC's own tools first, and the checker then reads the rewritten program.
+    if (callbacks.items.len != 0) {
+        const dir = work_dir orelse {
+            std.debug.print("error: {s}\n  callbacks need a --work directory\n", .{function});
+            std.process.exit(2);
+        };
+        const compiled = try std.fs.path.join(arena, &.{ dir, "compiled.gb" });
+        const restricted = try std.fs.path.join(arena, &.{ dir, "restricted.gb" });
+        var compile = try tool.clone(arena);
+        try compile.append(arena, "goto-cc");
+        try compile.appendSlice(arena, program);
+        try compile.appendSlice(arena, &.{ "-o", compiled });
+        var restrict = try tool.clone(arena);
+        try restrict.append(arena, "goto-instrument");
+        for (callbacks.items) |callback| {
+            const value = bounds.restriction(arena, c_source, callback) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                error.InvalidBound, error.InvalidCallback, error.UnknownFunction => {
+                    std.debug.print("error: {s}\n  callback `{s}`: {s}\n", .{ function, callback, @errorName(err) });
+                    std.process.exit(2);
+                },
+            };
+            try restrict.appendSlice(arena, &.{ "--restrict-function-pointer", value });
+        }
+        try restrict.appendSlice(arena, &.{ compiled, restricted });
+        for ([_][]const []const u8{ compile.items, restrict.items }) |command| {
+            const step = try std.process.run(arena, init.io, .{ .argv = command });
+            if (step.term != .exited or step.term.exited != 0) {
+                std.debug.print("error: {s}\n  {s} failed:\n{s}{s}\n", .{ function, command[tool.items.len], step.stdout, step.stderr });
+                std.process.exit(2);
+            }
+        }
+        program = &.{restricted};
+    }
+
+    var argv = try tool.clone(arena);
+    try argv.append(arena, "cbmc");
+    try argv.appendSlice(arena, program);
     try argv.appendSlice(arena, &.{ "--function", function });
-    const c_source = try std.Io.Dir.cwd().readFileAlloc(init.io, c_file, arena, .unlimited);
     const source: ?report.Source = if (args[8].len == 0) null else .{
         // Reports read better with the path as it is typed from the build root.
         .path = if (std.mem.startsWith(u8, args[8], cwd)) std.mem.trimStart(u8, args[8][cwd.len..], "/") else args[8],
         .text = try std.Io.Dir.cwd().readFileAlloc(init.io, args[8], arena, .unlimited),
     };
-    if (args.len > 9) {
+    if (unwind_bounds.items.len != 0) {
         const base = argv.items.len;
         try argv.appendSlice(arena, &.{ "--show-loops", "--json-ui" });
         const loops = try std.process.run(arena, init.io, .{ .argv = argv.items });
         argv.shrinkRetainingCapacity(base);
-        const unwindset = bounds.unwindset(arena, c_source, loops.stdout, args[9..]) catch |err| switch (err) {
+        const unwindset = bounds.unwindset(arena, c_source, loops.stdout, unwind_bounds.items) catch |err| switch (err) {
             error.OutOfMemory => return err,
-            error.InvalidBound, error.UnknownFunction => {
+            error.InvalidBound, error.InvalidCallback, error.UnknownFunction => {
                 std.debug.print("error: {s}\n  {s}\n", .{ function, switch (err) {
                     error.InvalidBound => "a bound is not of the form function=count",
                     else => "a bound names a function that is not in the generated C; use the name reports print",

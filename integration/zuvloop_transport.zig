@@ -557,10 +557,11 @@ fn closeWhenCallFails(comptime failing: usize, comptime later: usize) void {
 
 /// When libuv refuses the descriptor, creating a transport fails with a Python error, queues
 /// nothing, leaves the loop's list of transports alone, and closes the half-made handle
-/// exactly once.
+/// exactly once, giving back its count when that close completes.
 ///
-/// The close callback is not run here. On this path the checker cannot tell which function
-/// libuv was handed, tries every function of that shape, and does not finish.
+/// On this path the checker cannot tell which function libuv was handed to run on close,
+/// so the build names the two it can be. Without that it tries every function of that
+/// shape and does not finish.
 export fn make_transport_cleans_up_when_the_descriptor_is_refused() void {
     _ = openTransport();
     stream.open_fails = true;
@@ -570,6 +571,9 @@ export fn make_transport_cleans_up_when_the_descriptor_is_refused() void {
     verifier.assert(loop_state.transport_head == null);
     verifier.assert(stream.handleCloses() == 1);
     verifier.assert(loop_state.closing_handles == 1);
+    stream.deliverClose();
+    verifier.assert(loop_state.external_handles == 1);
+    verifier.assert(loop_state.closing_handles == 0);
 }
 
 comptime {

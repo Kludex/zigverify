@@ -566,10 +566,10 @@ fn closeWhenCallFails(comptime failing: usize, comptime later: usize) void {
 /// On this path the checker cannot tell which function libuv was handed to run on close,
 /// so the build names the two it can be. Without that it tries every function of that
 /// shape and does not finish.
-export fn make_transport_cleans_up_when_the_descriptor_is_refused() void {
+fn refusedDescriptorIsCleanedUp(comptime kind: c_int) void {
     _ = openTransport();
     stream.open_fails = true;
-    if (makeTcpTransport()) |_| verifier.assert(false) else |_| {}
+    if (makeTransportOfKind(kind)) |_| verifier.assert(false) else |_| {}
     verifier.assert(cpython.errorIsSet());
     verifier.assert(loop_state.ready.len == 0);
     verifier.assert(loop_state.transport_head == null);
@@ -578,6 +578,14 @@ export fn make_transport_cleans_up_when_the_descriptor_is_refused() void {
     stream.deliverClose();
     verifier.assert(loop_state.external_handles == 1);
     verifier.assert(loop_state.closing_handles == 0);
+}
+
+export fn make_transport_cleans_up_when_the_descriptor_is_refused() void {
+    refusedDescriptorIsCleanedUp(zuvloop.transport.KIND_TCP);
+}
+
+export fn make_pipe_transport_cleans_up_when_the_descriptor_is_refused() void {
+    refusedDescriptorIsCleanedUp(zuvloop.transport.KIND_PIPE);
 }
 
 comptime {
@@ -651,15 +659,23 @@ export fn refused_shutdown_leaves_the_transport_open() void {
 
 /// When libuv cannot set up the handle, creating a transport raises and queues nothing, and
 /// there is no handle to close.
-export fn make_transport_raises_when_the_handle_cannot_be_set_up() void {
+fn failedSetupRaises(comptime kind: c_int) void {
     _ = openTransport();
     stream.init_fails = true;
-    if (makeTcpTransport()) |_| verifier.assert(false) else |_| {}
+    if (makeTransportOfKind(kind)) |_| verifier.assert(false) else |_| {}
     verifier.assert(cpython.errorIsSet());
     verifier.assert(loop_state.ready.len == 0);
     verifier.assert(loop_state.transport_head == null);
     verifier.assert(loop_state.external_handles == 1);
     verifier.assert(stream.handleCloses() == 0);
+}
+
+export fn make_transport_raises_when_the_handle_cannot_be_set_up() void {
+    failedSetupRaises(zuvloop.transport.KIND_TCP);
+}
+
+export fn make_pipe_transport_raises_when_the_handle_cannot_be_set_up() void {
+    failedSetupRaises(zuvloop.transport.KIND_PIPE);
 }
 
 /// Creating a transport for a pipe opens it and queues the connection's first calls, as it

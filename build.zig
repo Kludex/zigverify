@@ -204,6 +204,11 @@ pub fn build(b: *std.Build) void {
             .{ .function = "zig_collections_Ready_ensureUnusedCapacity", .unwind = 2 },
             .{ .function = "zig_collections_Ready_grow", .unwind = 2 },
         };
+        // The only two functions the transport ever hands libuv to run when a handle closes.
+        const close_callbacks: []const Callback = &.{.{
+            .caller = "libuv_stream_Model_28zig_uv_29_deliverClose",
+            .targets = &.{ "zig_transport_onOpenFailed", "zig_transport_onClosed" },
+        }};
         const zuvloop_step = b.step("verify-zuvloop", "Prove properties of zuvloop against the CPython and libuv models");
         prover.add(zuvloop_step, .{
             .root_source_file = b.path("integration/zuvloop_transport.zig"),
@@ -234,11 +239,15 @@ pub fn build(b: *std.Build) void {
                     .function = "make_transport_cleans_up_when_the_descriptor_is_refused",
                     .unwind = 40,
                     .bounds = ready_queue_bounds,
-                    .callbacks = &.{.{
-                        .caller = "libuv_stream_Model_28zig_uv_29_deliverClose",
-                        .targets = &.{ "zig_transport_onOpenFailed", "zig_transport_onClosed" },
-                    }},
+                    .callbacks = close_callbacks,
                 },
+                .{
+                    .function = "make_pipe_transport_cleans_up_when_the_descriptor_is_refused",
+                    .unwind = 40,
+                    .bounds = ready_queue_bounds,
+                    .callbacks = close_callbacks,
+                },
+                .{ .function = "make_pipe_transport_raises_when_the_handle_cannot_be_set_up", .unwind = 40, .bounds = ready_queue_bounds },
                 .{ .function = "make_transport_raises_when_the_handle_cannot_be_set_up", .unwind = 40, .bounds = ready_queue_bounds },
                 .{ .function = "make_pipe_transport_opens_and_schedules_the_connection", .unwind = 40, .bounds = ready_queue_bounds },
                 .{ .function = "refused_read_start_closes_once", .unwind = 40 },

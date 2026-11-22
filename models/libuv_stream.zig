@@ -294,12 +294,14 @@ pub fn Model(comptime uv: type) type {
             _ = loop;
             _ = handle;
             _ = ipc;
+            if (init_fails) return einval;
             return if (failures and verifier.any(bool)) einval else 0;
         }
 
         fn pipeOpen(handle: Parameter(uv.uv_pipe_open, 0), file: Parameter(uv.uv_pipe_open, 1)) callconv(.c) c_int {
             _ = handle;
             _ = file;
+            if (open_fails) return einval;
             return if (failures and verifier.any(bool)) einval else 0;
         }
 

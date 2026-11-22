@@ -214,6 +214,7 @@ The `integration` directory uses the models on a real extension, zuvloop. Run it
 | A refused read start closes the transport exactly once | 24s |
 | A refused read stop makes `pause_reading()` raise and leaves the transport reading | 28s |
 | Creating a pipe transport opens it and queues the connection's first calls | 10 min |
+| Creating a pipe transport fails cleanly when the handle cannot be set up, or the descriptor is refused | 16 min, 1 hour |
 | A refused half-close leaves the transport open and holding no request | 26s |
 | `close()` with any one call failing: still drains, closes exactly once, releases every buffer | 4 x 60s |
 | ... and still kept when `pause_writing` calls `close()` | refuted in 15s |
@@ -222,7 +223,7 @@ The last one is a real bug. The fifth `write()` flushes a full batch, the flush 
 protocol, and if the protocol closes the transport from `pause_writing`, the byte of that
 fifth write is released without being sent, although `write()` reported success.
 
-Pass `-j1` to run them one at a time, which takes about three and three quarter hours: run together they
+Pass `-j1` to run them one at a time, which takes about five hours: run together they
 need more memory than most machines have.
 
 Each flush proof fixes what the socket answers. One proof over every answer at once does
